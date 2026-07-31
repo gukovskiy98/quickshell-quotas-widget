@@ -122,6 +122,34 @@ test_rejects_empty_key() {
     assert_contains "$output" '--management-key' || return 1
 }
 
+test_rejects_option_as_management_key_value() {
+    reset_installer_state
+    local output status
+    set +e
+    output="$(parse_args --api-url http://localhost --management-key --management-key-stdin 2>&1)"
+    status=$?
+    set -e
+    [[ $status -ne 0 ]] || fail 'management key option token must fail' || return 1
+    assert_contains "$output" '--management-key' || return 1
+}
+
+test_usage_remains_bilingual() {
+    local output russian_usage
+    russian_usage="$(printf '%b' '\xD0\x98\xD1\x81\xD0\xBF\xD0\xBE\xD0\xBB\xD1\x8C\xD0\xB7\xD0\xBE\xD0\xB2\xD0\xB0\xD0\xBD\xD0\xB8\xD0\xB5')"
+    output="$(usage)"
+    assert_contains "$output" 'Usage:' || return 1
+    assert_contains "$output" "$russian_usage" || return 1
+}
+
+test_shell_sources_are_ascii() {
+    local output status
+    set +e
+    output="$(LC_ALL=C grep -n '[^ -~]' "$repo_root/install.sh" "$repo_root"/tests/*.bash 2>&1)"
+    status=$?
+    set -e
+    [[ $status -eq 1 ]] || fail "non-ASCII shell source: $output" || return 1
+}
+
 test_accepts_http_url() {
     reset_installer_state
     assert_eq 'http://example.com/api' "$(normalize_api_url 'http://example.com/api///')" || return 1
@@ -260,6 +288,9 @@ run_test 'help exits zero' test_help_exits_zero
 run_test 'rejects unknown flag' test_rejects_unknown_flag
 run_test 'rejects missing flag value' test_rejects_missing_flag_value
 run_test 'rejects empty management key' test_rejects_empty_key
+run_test 'rejects option as management key value' test_rejects_option_as_management_key_value
+run_test 'usage remains bilingual' test_usage_remains_bilingual
+run_test 'shell sources are ASCII' test_shell_sources_are_ascii
 run_test 'accepts HTTP URL' test_accepts_http_url
 run_test 'accepts HTTPS URL' test_accepts_https_url
 run_test 'resolves custom install directory' test_resolves_custom_install_dir

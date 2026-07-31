@@ -1,0 +1,4 @@
+{
+  "status_code": 200,
+  "body": "{\"rate_limit\":{\"primary_window\":{\"used_percent\":25,\"reset_at\":1893456000}}}"
+}

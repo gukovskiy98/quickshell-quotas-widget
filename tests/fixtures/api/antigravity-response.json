@@ -1,0 +1,39 @@
+{
+  "status_code": 200,
+  "body": {
+    "groups": [
+      {
+        "displayName": "Gemini Models",
+        "buckets": [
+          {
+            "bucketId": "gemini-pro",
+            "displayName": "Gemini Pro",
+            "remainingFraction": 0.6,
+            "resetTime": "2030-01-01T00:00:00Z"
+          },
+          {
+            "bucketId": "gemini-flash",
+            "remainingFraction": 0.2,
+            "resetTime": 1893456000000
+          }
+        ]
+      },
+      {
+        "displayName": "Agent Limits",
+        "buckets": [
+          {
+            "bucketId": "agent-requests",
+            "displayName": "Agent Requests",
+            "remainingFraction": 0.9,
+            "resetTime": 1893456000
+          },
+          {
+            "bucketId": "missing-remaining",
+            "displayName": "Ignored Bucket",
+            "resetTime": 1893456000
+          }
+        ]
+      }
+    ]
+  }
+}

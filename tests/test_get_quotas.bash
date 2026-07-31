@@ -273,7 +273,16 @@ test_exposes_source_only_interface() {
     prepare_fetcher
     QUOTAS_FETCHER_SOURCE_ONLY=1 QUOTAS_CONFIG_PATH="$QUOTAS_CONFIG_PATH" source "$FETCHER"
 
-    declare -F load_credentials curl_json fetch_auth_files main >/dev/null || return 1
+    declare -F \
+        load_credentials \
+        curl_json \
+        fetch_auth_files \
+        api_call \
+        get_codex_quota \
+        get_antigravity_quota \
+        format_refresh_in \
+        fetch_all_quotas \
+        main >/dev/null || return 1
     assert_eq '' "$API_URL" || return 1
     assert_eq '' "$MANAGEMENT_KEY" || return 1
     assert_eq '' "$HTTP_STATUS" || return 1
@@ -312,6 +321,209 @@ test_mock_curl_expands_every_header_file() {
     [[ "$(<"$MOCK_CURL_LOG")" != *'Second: beta'* ]] || fail 'second header leaked into curl arguments'
 }
 
+test_transforms_codex_primary_window() {
+    prepare_fetcher
+    write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
+    queue_http_text 200 '{"files":[{"name":"codex.json","type":"codex","auth_index":11}]}'
+    queue_http 200 "$FIXTURES/api/codex-response.json"
+
+    local output
+    output="$(QUOTAS_EPOCH_NOW=1893369600 run_fetcher)" || return 1
+
+    jq -e '
+      .quotas[0].type == "codex" and
+      .quotas[0].groups[0].name == "Codex Limit" and
+      .quotas[0].groups[0].items[0].val == "75.00%" and
+      .quotas[0].groups[0].items[0].resetTime == "1 day, 0 hours" and
+      .quotas[0].minRemaining == 0.75 and
+      .minRemaining == 0.75 and
+      .avgRemaining == 0.75
+    ' <<<"$output" >/dev/null
+    assert_contains "$(<"$MOCK_CURL_LOG")" 'https://chatgpt.com/backend-api/wham/usage' || return 1
+    assert_contains "$(<"$MOCK_CURL_LOG")" 'codex_cli_rs/0.76.0' || return 1
+    [[ "$(<"$MOCK_CURL_LOG")" != *'fallback-key'* ]] || fail 'management key leaked into provider curl arguments'
+}
+
+test_transforms_antigravity_groups() {
+    prepare_fetcher
+    write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
+    queue_http_text 200 '{"files":[{"name":"antigravity.json","type":"antigravity","auth_index":22,"project_id":"project-direct"}]}'
+    queue_http 200 "$FIXTURES/api/antigravity-response.json"
+
+    local output
+    output="$(QUOTAS_EPOCH_NOW=1893369600 run_fetcher)" || return 1
+
+    jq -e '
+      .quotas[0].type == "antigravity" and
+      (.quotas[0].groups | length) == 2 and
+      .quotas[0].groups[0].name == "Gemini Models" and
+      .quotas[0].groups[0].items[0].label == "Gemini Pro" and
+      .quotas[0].groups[0].items[1].label == "gemini-flash" and
+      .quotas[0].groups[0].items[1].val == "20.00%" and
+      .quotas[0].minRemaining == 0.2 and
+      .minRemaining == 0.2
+    ' <<<"$output" >/dev/null
+}
+
+test_reads_antigravity_project_id_from_metadata() {
+    prepare_fetcher
+    write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
+    queue_http_text 200 '{"files":[{"name":"metadata.json","type":"antigravity","auth_index":22,"attributes":{"gemini_virtual_project":"metadata-project"}}]}'
+    queue_http 200 "$FIXTURES/api/antigravity-response.json"
+
+    run_fetcher >/dev/null || return 1
+
+    [[ "$(<"$MOCK_CURL_LOG")" != *'/auth-files/download?'* ]] || fail 'metadata project ID must avoid auth-file download' || return 1
+    assert_contains "$(<"$MOCK_CURL_LOG")" 'retrieveUserQuotaSummary' || return 1
+    assert_contains "$(<"$MOCK_CURL_LOG")" 'antigravity/cli/1.0.13' || return 1
+    [[ "$(<"$MOCK_CURL_LOG")" != *'fallback-key'* ]] || fail 'management key leaked into provider curl arguments'
+}
+
+test_downloads_antigravity_auth_file_for_project_id() {
+    prepare_fetcher
+    write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
+    queue_http_text 200 '{"files":[{"name":"antigravity account.json","type":"antigravity","auth_index":22}]}'
+    queue_http 200 "$FIXTURES/api/antigravity-auth-file.json"
+    queue_http 200 "$FIXTURES/api/antigravity-response.json"
+
+    local output
+    output="$(run_fetcher)" || return 1
+
+    jq -e '.quotas[0].name == "antigravity account.json" and .quotas[0].minRemaining == 0.2' <<<"$output" >/dev/null || return 1
+    assert_contains "$(<"$MOCK_CURL_LOG")" 'download\?name=antigravity%20account.json'
+}
+
+test_rejects_upstream_error_status() {
+    prepare_fetcher
+    write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
+    queue_http_text 200 '{"files":[{"name":"codex.json","type":"codex","auth_index":11}]}'
+    queue_http_text 200 '{"status_code":429,"body":{"error":"rate limited"}}'
+    local stdout_file="$TEST_TMP_ROOT/stdout" stderr_file="$TEST_TMP_ROOT/stderr"
+
+    run_fetcher >"$stdout_file" 2>"$stderr_file" || return 1
+
+    jq -e '.quotas == [] and .minRemaining == 1 and .avgRemaining == 1' "$stdout_file" >/dev/null || return 1
+    assert_contains "$(<"$stderr_file")" 'Upstream API returned status 429'
+}
+
+test_accepts_string_wrapper_body() {
+    prepare_fetcher
+    write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
+    queue_http_text 200 '{"files":[{"name":"codex.json","type":"codex","auth_index":11}]}'
+    queue_http 200 "$FIXTURES/api/codex-response.json"
+
+    local output
+    output="$(run_fetcher)" || return 1
+
+    jq -e '.quotas[0].groups[0].items[0].val == "75.00%"' <<<"$output" >/dev/null
+}
+
+test_accepts_object_wrapper_body() {
+    prepare_fetcher
+    write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
+    queue_http_text 200 '{"files":[{"name":"codex.json","type":"codex","auth_index":11}]}'
+    queue_http_text 200 '{"status_code":200,"body":{"rate_limit":{"primary_window":{"used_percent":40,"reset_at":1893456000}}}}'
+
+    local output
+    output="$(run_fetcher)" || return 1
+
+    jq -e '.quotas[0].groups[0].items[0].val == "60.00%"' <<<"$output" >/dev/null
+}
+
+test_keeps_antigravity_account_without_displayable_groups() {
+    prepare_fetcher
+    write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
+    queue_http_text 200 '{"files":[{"name":"empty-antigravity.json","type":"antigravity","auth_index":22,"project_id":"project-direct"}]}'
+    queue_http_text 200 '{"status_code":200,"body":{"groups":[{"displayName":"Empty","buckets":[{"bucketId":"no-fraction"}]}]}}'
+
+    local output
+    output="$(run_fetcher)" || return 1
+
+    jq -e '
+      .quotas[0].name == "empty-antigravity.json" and
+      .quotas[0].groups == [] and
+      .quotas[0].minRemaining == null and
+      .minRemaining == 1 and
+      .avgRemaining == 1
+    ' <<<"$output" >/dev/null
+}
+
+test_returns_partial_result_after_account_failure() {
+    prepare_fetcher
+    write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
+    queue_http 200 "$FIXTURES/api/auth-files-mixed.json"
+    queue_http_text 200 '{"status_code":500,"body":{"error":"codex unavailable"}}'
+    queue_http 200 "$FIXTURES/api/antigravity-response.json"
+
+    local output
+    output="$(run_fetcher 2>"$TEST_TMP_ROOT/stderr")" || return 1
+
+    jq -e '.quotas | length == 1 and .[0].type == "antigravity"' <<<"$output" >/dev/null || return 1
+    assert_contains "$(<"$TEST_TMP_ROOT/stderr")" 'codex-primary.json'
+}
+
+test_computes_global_average_from_displayed_limits() {
+    prepare_fetcher
+    write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
+    queue_http 200 "$FIXTURES/api/auth-files-mixed.json"
+    queue_http 200 "$FIXTURES/api/codex-response.json"
+    queue_http 200 "$FIXTURES/api/antigravity-response.json"
+
+    local output
+    output="$(run_fetcher)" || return 1
+
+    jq -e '.avgRemaining == 0.6125 and .minRemaining == 0.2 and (.quotas | length) == 2' <<<"$output" >/dev/null
+}
+
+test_skips_disabled_and_runtime_only_accounts() {
+    prepare_fetcher
+    write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
+    queue_http 200 "$FIXTURES/api/auth-files-mixed.json"
+    queue_http 200 "$FIXTURES/api/codex-response.json"
+    queue_http 200 "$FIXTURES/api/antigravity-response.json"
+
+    local output
+    output="$(run_fetcher)" || return 1
+
+    jq -e '
+      [.quotas[].name] == ["codex-primary.json", "antigravity-main.json"] and
+      ([.quotas[].name] | index("disabled-codex.json")) == null and
+      ([.quotas[].name] | index("runtime-antigravity.json")) == null
+    ' <<<"$output" >/dev/null
+}
+
+test_logs_unsupported_provider() {
+    prepare_fetcher
+    write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
+    queue_http 200 "$FIXTURES/api/auth-files-mixed.json"
+    queue_http 200 "$FIXTURES/api/codex-response.json"
+    queue_http 200 "$FIXTURES/api/antigravity-response.json"
+    local stderr_file="$TEST_TMP_ROOT/stderr"
+
+    run_fetcher >/dev/null 2>"$stderr_file" || return 1
+
+    assert_contains "$(<"$stderr_file")" 'unsupported-claude.json' || return 1
+    assert_contains "$(<"$stderr_file")" 'unsupported provider claude'
+}
+
+test_formats_epoch_seconds_reset() {
+    QUOTAS_FETCHER_SOURCE_ONLY=1 source "$FETCHER"
+    QUOTAS_EPOCH_NOW=1893369600
+    assert_eq '1 day, 0 hours' "$(format_refresh_in 1893456000)"
+}
+
+test_formats_epoch_milliseconds_reset() {
+    QUOTAS_FETCHER_SOURCE_ONLY=1 source "$FETCHER"
+    QUOTAS_EPOCH_NOW=1893369600
+    assert_eq '1 day, 0 hours' "$(format_refresh_in 1893456000000)"
+}
+
+test_formats_iso_reset() {
+    QUOTAS_FETCHER_SOURCE_ONLY=1 source "$FETCHER"
+    QUOTAS_EPOCH_NOW=1893369600
+    assert_eq '1 day, 0 hours' "$(format_refresh_in '2030-01-01T00:00:00Z')"
+}
+
 run_test 'reads fallback JSON without eval' test_reads_fallback_json_without_eval
 run_test 'failure assertion preserves errexit state' test_assert_fetcher_failure_preserves_errexit_state
 run_test 'prefers fallback when file exists' test_prefers_fallback_when_file_exists
@@ -333,5 +545,20 @@ run_test 'formats production time with runtime bullet' test_formats_production_t
 run_test 'exposes source-only interface' test_exposes_source_only_interface
 run_test 'mock curl separates header path from contents' test_mock_curl_logs_header_path_separately_from_contents
 run_test 'mock curl expands every header file' test_mock_curl_expands_every_header_file
+run_test 'transforms Codex primary window' test_transforms_codex_primary_window
+run_test 'transforms Antigravity groups' test_transforms_antigravity_groups
+run_test 'reads Antigravity project ID from metadata' test_reads_antigravity_project_id_from_metadata
+run_test 'downloads Antigravity auth file for project ID' test_downloads_antigravity_auth_file_for_project_id
+run_test 'rejects upstream error status' test_rejects_upstream_error_status
+run_test 'accepts string wrapper body' test_accepts_string_wrapper_body
+run_test 'accepts object wrapper body' test_accepts_object_wrapper_body
+run_test 'keeps Antigravity account without displayable groups' test_keeps_antigravity_account_without_displayable_groups
+run_test 'returns partial result after account failure' test_returns_partial_result_after_account_failure
+run_test 'computes global average from displayed limits' test_computes_global_average_from_displayed_limits
+run_test 'skips disabled and runtime-only accounts' test_skips_disabled_and_runtime_only_accounts
+run_test 'logs unsupported provider' test_logs_unsupported_provider
+run_test 'formats epoch-seconds reset' test_formats_epoch_seconds_reset
+run_test 'formats epoch-milliseconds reset' test_formats_epoch_milliseconds_reset
+run_test 'formats ISO reset' test_formats_iso_reset
 
 finish_tests

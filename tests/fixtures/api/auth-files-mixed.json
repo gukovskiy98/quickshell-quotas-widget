@@ -1,0 +1,38 @@
+{
+  "files": [
+    {
+      "name": "codex-primary.json",
+      "type": "codex",
+      "auth_index": 11
+    },
+    {
+      "name": "antigravity-main.json",
+      "provider": "antigravity",
+      "authIndex": 22,
+      "metadata": {
+        "projectId": "project-from-metadata"
+      }
+    },
+    {
+      "name": "disabled-codex.json",
+      "type": "codex",
+      "auth_index": 33,
+      "disabled": true
+    },
+    {
+      "name": "runtime-antigravity.json",
+      "type": "antigravity",
+      "auth_index": 44,
+      "runtime_only": true
+    },
+    {
+      "name": "unsupported-claude.json",
+      "type": "claude",
+      "auth_index": 55
+    },
+    {
+      "name": "missing-auth-index.json",
+      "type": "codex"
+    }
+  ]
+}

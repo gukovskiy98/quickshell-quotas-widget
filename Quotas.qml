@@ -24,6 +24,7 @@ MouseArea {
     readonly property string quotaScriptPath: FileUtils.trimFileProtocol(`${Qt.resolvedUrl("get-quotas.sh")}`)
     property string pendingStdout: ""
     property string pendingStderr: ""
+    property bool processStarted: false
 
     Process {
         id: fetchQuotasProcess
@@ -38,12 +39,35 @@ MouseArea {
                 root.pendingStderr = text;
             }
         }
+        onStarted: root.processStarted = true
+        onRunningChanged: {
+            if (!running && root.isFetching && !root.processStarted) {
+                const diagnostic = root.pendingStderr.trim();
+                if (diagnostic.length > 0) {
+                    console.error("Failed to launch quota fetch:", diagnostic);
+                } else {
+                    console.error("Failed to launch quota fetch process");
+                }
+                root.pendingStdout = "";
+                root.pendingStderr = "";
+                root.isFetching = false;
+            }
+        }
         onExited: function(exitCode, exitStatus) {
             try {
                 if (exitCode === 0) {
                     const parsed = JSON.parse(root.pendingStdout);
+                    const validPayload = parsed !== null
+                        && typeof parsed === "object"
+                        && !Array.isArray(parsed)
+                        && Array.isArray(parsed.quotas)
+                        && typeof parsed.avgRemaining === "number"
+                        && Number.isFinite(parsed.avgRemaining);
+                    if (!validPayload) {
+                        throw new Error("Invalid quota payload");
+                    }
                     root.quotasData = parsed;
-                    root.avgRemaining = parsed.avgRemaining ?? 1.0;
+                    root.avgRemaining = parsed.avgRemaining;
                 } else {
                     const diagnostic = root.pendingStderr.trim();
                     if (diagnostic.length > 0) {
@@ -57,6 +81,7 @@ MouseArea {
             } finally {
                 root.pendingStdout = "";
                 root.pendingStderr = "";
+                root.processStarted = false;
                 root.isFetching = false;
             }
         }
@@ -66,6 +91,7 @@ MouseArea {
         if (mouse.button === Qt.RightButton) {
             if (!root.isFetching) {
                 root.isFetching = true;
+                root.processStarted = false;
                 fetchQuotasProcess.running = true;
                 try {
                     Quickshell.execDetached(["notify-send",
@@ -83,6 +109,7 @@ MouseArea {
 
     Component.onCompleted: {
         root.isFetching = true;
+        root.processStarted = false;
         fetchQuotasProcess.running = true;
     }
 

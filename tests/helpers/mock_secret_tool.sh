@@ -8,14 +8,22 @@ shift || true
 
 case "$command_name" in
     store)
-        ((${MOCK_SECRET_FAIL_STORE:-0} == 0)) || exit "$MOCK_SECRET_FAIL_STORE"
         key="${!#}"
+        ((${MOCK_SECRET_FAIL_STORE:-0} == 0)) || exit "$MOCK_SECRET_FAIL_STORE"
+        [[ "${MOCK_SECRET_FAIL_STORE_KEY:-}" != "$key" ]] || exit "${MOCK_SECRET_FAIL_STORE_KEY_CODE:-1}"
         mkdir -p -- "$MOCK_SECRET_STORE_DIR"
         cat >"$MOCK_SECRET_STORE_DIR/$key"
         ;;
     lookup)
-        ((${MOCK_SECRET_FAIL_LOOKUP:-0} == 0)) || exit "$MOCK_SECRET_FAIL_LOOKUP"
         key="${!#}"
+        if [[ -n "${MOCK_SECRET_LOOKUP_LOG:-}" ]]; then
+            printf '%s\n' "$key" >>"$MOCK_SECRET_LOOKUP_LOG"
+        fi
+        ((${MOCK_SECRET_FAIL_LOOKUP:-0} == 0)) || exit "$MOCK_SECRET_FAIL_LOOKUP"
+        if [[ "${MOCK_SECRET_LOOKUP_OVERRIDE_KEY:-}" == "$key" ]]; then
+            printf '%s' "${MOCK_SECRET_LOOKUP_OVERRIDE_VALUE:-}"
+            exit 0
+        fi
         [[ -f "$MOCK_SECRET_STORE_DIR/$key" ]] || exit 1
         cat -- "$MOCK_SECRET_STORE_DIR/$key"
         ;;

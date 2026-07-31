@@ -11,6 +11,8 @@ HELP_REQUESTED=0
 WORK_DIR=""
 ARCHIVE_PATH=""
 PAYLOAD_DIR=""
+FALLBACK_CONFIG=""
+CREDENTIAL_BACKEND=""
 
 usage() {
     cat <<'EOF'
@@ -359,6 +361,72 @@ validate_archive() {
     }
 }
 
+store_keyring_credentials() {
+    local secret_tool="${QUOTAS_SECRET_TOOL_BIN:-secret-tool}"
+    local stored_api_url stored_management_key sentinel='x'
+    local api_lookup_ok=0 key_lookup_ok=0
+
+    [[ -x "$secret_tool" ]] || command -v "$secret_tool" >/dev/null 2>&1 || return 1
+    printf '%s' "$API_URL" | "$secret_tool" store \
+        --label='Quotas API URL' application quotas key quotasApiUrl || return 1
+    printf '%s' "$MANAGEMENT_KEY" | "$secret_tool" store \
+        --label='Quotas Management Key' application quotas key quotasManagementKey || return 1
+    if stored_api_url="$("$secret_tool" lookup application quotas key quotasApiUrl && printf '%s' "$sentinel")"; then
+        api_lookup_ok=1
+        stored_api_url="${stored_api_url%$sentinel}"
+    fi
+    if stored_management_key="$("$secret_tool" lookup application quotas key quotasManagementKey && printf '%s' "$sentinel")"; then
+        key_lookup_ok=1
+        stored_management_key="${stored_management_key%$sentinel}"
+    fi
+    ((api_lookup_ok == 1 && key_lookup_ok == 1)) || return 1
+    [[ "$stored_api_url" == "$API_URL" && "$stored_management_key" == "$MANAGEMENT_KEY" ]]
+}
+
+write_fallback_config() {
+    local tmp_config
+
+    mkdir -p -- "$INSTALL_DIR" || {
+        die 'cannot create credential configuration directory' || return 1
+    }
+    tmp_config="$(mktemp "$INSTALL_DIR/quotas-widget.conf.XXXXXX")" || {
+        die 'cannot create temporary credential configuration' || return 1
+    }
+    if ! jq -n --arg apiUrl "$API_URL" --arg managementKey "$MANAGEMENT_KEY" \
+        '{apiUrl:$apiUrl, managementKey:$managementKey}' >"$tmp_config"; then
+        rm -f -- "$tmp_config"
+        die 'cannot write credential fallback configuration' || return 1
+    fi
+    chmod 600 "$tmp_config" || {
+        rm -f -- "$tmp_config"
+        die 'cannot secure credential fallback configuration' || return 1
+    }
+    mv -f -- "$tmp_config" "$FALLBACK_CONFIG" || {
+        rm -f -- "$tmp_config"
+        die 'cannot install credential fallback configuration' || return 1
+    }
+}
+
+store_credentials() {
+    local fallback_warning
+
+    FALLBACK_CONFIG="$INSTALL_DIR/quotas-widget.conf"
+    CREDENTIAL_BACKEND=""
+
+    if store_keyring_credentials; then
+        rm -f -- "$FALLBACK_CONFIG" || {
+            die 'cannot remove obsolete credential fallback configuration' || return 1
+        }
+        CREDENTIAL_BACKEND='keyring'
+        return 0
+    fi
+
+    fallback_warning="$(printf '%b' 'Secret Service credential storage failed verification; using a local protected file / \xD0\x9F\xD1\x80\xD0\xBE\xD0\xB2\xD0\xB5\xD1\x80\xD0\xBA\xD0\xB0 \xD1\x85\xD1\x80\xD0\xB0\xD0\xBD\xD0\xB8\xD0\xBB\xD0\xB8\xD1\x89\xD0\xB0 Secret Service \xD0\xBD\xD0\xB5 \xD1\x83\xD0\xB4\xD0\xB0\xD0\xBB\xD0\xB0\xD1\x81\xD1\x8C; \xD0\xB8\xD1\x81\xD0\xBF\xD0\xBE\xD0\xBB\xD1\x8C\xD0\xB7\xD1\x83\xD0\xB5\xD1\x82\xD1\x81\xD1\x8F \xD0\xB7\xD0\xB0\xD1\x89\xD0\xB8\xD1\x89\xD0\xB5\xD0\xBD\xD0\xBD\xD1\x8B\xD0\xB9 \xD0\xBB\xD0\xBE\xD0\xBA\xD0\xB0\xD0\xBB\xD1\x8C\xD0\xBD\xD1\x8B\xD0\xB9 \xD1\x84\xD0\xB0\xD0\xB9\xD0\xBB')"
+    warn "$fallback_warning"
+    write_fallback_config || return 1
+    CREDENTIAL_BACKEND='file'
+}
+
 _canonicalize_future_dir() {
     local path="$1" probe component suffix='' physical
 
@@ -529,6 +597,7 @@ main() {
     validate_end4_layout || return 1
     read_management_key || return 1
     validate_api || return 1
+    store_credentials || return 1
     fetch_latest_release || return 1
     validate_archive || return 1
 }

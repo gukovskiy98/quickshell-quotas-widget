@@ -17,6 +17,26 @@ reset_installer_state() {
     WORK_DIR=""
     ARCHIVE_PATH=""
     PAYLOAD_DIR=""
+    FALLBACK_CONFIG=""
+    CREDENTIAL_BACKEND=""
+}
+
+prepare_installer_fixture() {
+    reset_installer_state
+    API_URL='https://management.example'
+    MANAGEMENT_KEY='never-log-this-key'
+    INSTALL_DIR="$TEST_TMP_ROOT/install"
+    WORK_DIR="$TEST_TMP_ROOT/work"
+    MOCK_SECRET_STORE_DIR="$TEST_TMP_ROOT/secrets"
+    MOCK_SECRET_LOOKUP_LOG="$TEST_TMP_ROOT/secret-lookups.log"
+    QUOTAS_SECRET_TOOL_BIN="$repo_root/tests/helpers/mock_secret_tool.sh"
+    unset MOCK_SECRET_FAIL_STORE MOCK_SECRET_FAIL_STORE_KEY MOCK_SECRET_FAIL_STORE_KEY_CODE
+    unset MOCK_SECRET_FAIL_LOOKUP MOCK_SECRET_LOOKUP_OVERRIDE_KEY MOCK_SECRET_LOOKUP_OVERRIDE_VALUE
+    export QUOTAS_SECRET_TOOL_BIN MOCK_SECRET_STORE_DIR MOCK_SECRET_LOOKUP_LOG
+    export MOCK_SECRET_FAIL_STORE MOCK_SECRET_FAIL_STORE_KEY MOCK_SECRET_FAIL_STORE_KEY_CODE
+    export MOCK_SECRET_FAIL_LOOKUP MOCK_SECRET_LOOKUP_OVERRIDE_KEY MOCK_SECRET_LOOKUP_OVERRIDE_VALUE
+    mkdir -p "$INSTALL_DIR" "$WORK_DIR" "$MOCK_SECRET_STORE_DIR"
+    : >"$MOCK_SECRET_LOOKUP_LOG"
 }
 
 prepare_remote_fixture() {
@@ -659,6 +679,137 @@ test_fetch_latest_release_downloads_and_extracts_valid_payload() {
     assert_file_exists "$PAYLOAD_DIR/get-quotas.sh"
 }
 
+test_stores_and_verifies_keyring_values() {
+    prepare_installer_fixture
+    store_credentials || return 1
+    assert_eq 'keyring' "$CREDENTIAL_BACKEND" || return 1
+    assert_eq "$API_URL" "$(<"$MOCK_SECRET_STORE_DIR/quotasApiUrl")" || return 1
+    assert_eq "$MANAGEMENT_KEY" "$(<"$MOCK_SECRET_STORE_DIR/quotasManagementKey")" || return 1
+    [[ ! -e "$INSTALL_DIR/quotas-widget.conf" ]] || fail 'fallback must be absent'
+}
+
+test_verifies_keyring_value_ending_in_newline() {
+    prepare_installer_fixture
+    MANAGEMENT_KEY=$'key-ending-in-newline\n'
+    store_credentials || return 1
+    assert_eq 'keyring' "$CREDENTIAL_BACKEND" || return 1
+    [[ ! -e "$INSTALL_DIR/quotas-widget.conf" ]] || fail 'exact keyring match must not create fallback'
+}
+
+test_writes_json_fallback_with_mode_600() {
+    prepare_installer_fixture
+    QUOTAS_SECRET_TOOL_BIN="$TEST_TMP_ROOT/missing-secret-tool"
+    store_credentials || return 1
+    assert_eq 'file' "$CREDENTIAL_BACKEND" || return 1
+    jq -e --arg url "$API_URL" --arg key "$MANAGEMENT_KEY" \
+        '.apiUrl == $url and .managementKey == $key' \
+        "$INSTALL_DIR/quotas-widget.conf" >/dev/null || return 1
+    assert_file_mode 600 "$INSTALL_DIR/quotas-widget.conf"
+}
+
+test_falls_back_after_keyring_store_failure() {
+    prepare_installer_fixture
+    MOCK_SECRET_FAIL_STORE=23
+    export MOCK_SECRET_FAIL_STORE
+    store_credentials || return 1
+    assert_eq 'file' "$CREDENTIAL_BACKEND" || return 1
+    assert_file_exists "$INSTALL_DIR/quotas-widget.conf"
+}
+
+test_falls_back_after_keyring_lookup_failure() {
+    prepare_installer_fixture
+    MOCK_SECRET_FAIL_LOOKUP=24
+    export MOCK_SECRET_FAIL_LOOKUP
+    store_credentials || return 1
+    assert_eq 'file' "$CREDENTIAL_BACKEND" || return 1
+    assert_eq $'quotasApiUrl\nquotasManagementKey' "$(<"$MOCK_SECRET_LOOKUP_LOG")" || return 1
+    assert_file_exists "$INSTALL_DIR/quotas-widget.conf"
+}
+
+test_falls_back_after_keyring_lookup_mismatch() {
+    prepare_installer_fixture
+    MOCK_SECRET_LOOKUP_OVERRIDE_KEY='quotasManagementKey'
+    MOCK_SECRET_LOOKUP_OVERRIDE_VALUE='wrong-key'
+    export MOCK_SECRET_LOOKUP_OVERRIDE_KEY MOCK_SECRET_LOOKUP_OVERRIDE_VALUE
+    store_credentials || return 1
+    assert_eq 'file' "$CREDENTIAL_BACKEND" || return 1
+    assert_file_exists "$INSTALL_DIR/quotas-widget.conf"
+}
+
+test_falls_back_after_partial_keyring_write() {
+    prepare_installer_fixture
+    MOCK_SECRET_FAIL_STORE_KEY='quotasManagementKey'
+    MOCK_SECRET_FAIL_STORE_KEY_CODE=25
+    export MOCK_SECRET_FAIL_STORE_KEY MOCK_SECRET_FAIL_STORE_KEY_CODE
+    store_credentials || return 1
+    assert_eq 'file' "$CREDENTIAL_BACKEND" || return 1
+    assert_file_exists "$MOCK_SECRET_STORE_DIR/quotasApiUrl" || return 1
+    [[ ! -e "$MOCK_SECRET_STORE_DIR/quotasManagementKey" ]] || fail 'second keyring value must be absent' || return 1
+    assert_file_exists "$INSTALL_DIR/quotas-widget.conf"
+}
+
+test_removes_existing_fallback_after_keyring_success() {
+    prepare_installer_fixture
+    printf '{"apiUrl":"stale","managementKey":"stale"}\n' >"$INSTALL_DIR/quotas-widget.conf"
+    store_credentials || return 1
+    assert_eq 'keyring' "$CREDENTIAL_BACKEND" || return 1
+    [[ ! -e "$INSTALL_DIR/quotas-widget.conf" ]] || fail 'verified keyring must remove stale fallback'
+}
+
+test_preserves_special_characters_in_fallback_json() {
+    prepare_installer_fixture
+    MANAGEMENT_KEY=$'quotes " backslashes \\ spaces and\na newline'
+    QUOTAS_SECRET_TOOL_BIN="$TEST_TMP_ROOT/missing-secret-tool"
+    store_credentials || return 1
+    jq -e --arg url "$API_URL" --arg key "$MANAGEMENT_KEY" \
+        '.apiUrl == $url and .managementKey == $key' \
+        "$INSTALL_DIR/quotas-widget.conf" >/dev/null
+}
+
+test_never_logs_management_key() {
+    prepare_installer_fixture
+    local output
+    MANAGEMENT_KEY=$'exact-secret-"-\\-with spaces\nand-newline'
+    QUOTAS_SECRET_TOOL_BIN="$TEST_TMP_ROOT/missing-secret-tool"
+    output="$(store_credentials 2>&1)" || return 1
+    [[ "$output" != *"$MANAGEMENT_KEY"* ]] || fail 'management key leaked into credential storage output'
+}
+
+test_fallback_warning_is_bilingual() {
+    prepare_installer_fixture
+    local output russian_storage
+    QUOTAS_SECRET_TOOL_BIN="$TEST_TMP_ROOT/missing-secret-tool"
+    output="$(store_credentials 2>&1)" || return 1
+    russian_storage="$(printf '%b' '\xD1\x85\xD1\x80\xD0\xB0\xD0\xBD\xD0\xB8\xD0\xBB\xD0\xB8\xD1\x89\xD0\xB0')"
+    assert_contains "$output" 'Secret Service credential storage failed verification' || return 1
+    assert_contains "$output" "$russian_storage"
+}
+
+test_main_stores_credentials_after_api_validation() {
+    prepare_remote_fixture
+    local fixture="$repo_root/tests/fixtures/end4-dots/ii"
+    local release_archive="$TEST_TMP_ROOT/release.tar.gz"
+    CONFIG_ROOT="$TEST_TMP_ROOT/config"
+    INSTALL_DIR="$CONFIG_ROOT/modules/ii/bar"
+    MOCK_SECRET_STORE_DIR="$TEST_TMP_ROOT/secrets"
+    QUOTAS_SECRET_TOOL_BIN="$repo_root/tests/helpers/mock_secret_tool.sh"
+    export QUOTAS_SECRET_TOOL_BIN MOCK_SECRET_STORE_DIR
+    mkdir -p "$INSTALL_DIR" "$MOCK_SECRET_STORE_DIR"
+    cp "$fixture/shell.qml" "$CONFIG_ROOT/shell.qml"
+    cp "$fixture/modules/ii/bar/BarContent.qml" "$INSTALL_DIR/BarContent.qml"
+    prepare_required_commands
+    rm "$TEST_TMP_ROOT/bin/curl" "$TEST_TMP_ROOT/bin/jq" "$TEST_TMP_ROOT/bin/tar"
+    create_release_archive "$release_archive"
+    queue_http_text 200 '{"files":[]}'
+    queue_latest_release '[{"name":"quickshell-quotas-widget-v1.0.0.tar.gz","browser_download_url":"https://download.example/release.tar.gz"}]'
+    queue_http_file 200 "$release_archive"
+
+    PATH="$TEST_TMP_ROOT/bin:$PATH" run_with_mock_curl main \
+        --api-url "$API_URL" --management-key "$MANAGEMENT_KEY" --install-dir "$INSTALL_DIR" || return 1
+    assert_eq "$API_URL" "$(<"$MOCK_SECRET_STORE_DIR/quotasApiUrl")" || return 1
+    assert_eq "$MANAGEMENT_KEY" "$(<"$MOCK_SECRET_STORE_DIR/quotasManagementKey")"
+}
+
 run_test 'parses required API URL and management key' test_parse_required_api_url
 run_test 'rejects conflicting management key modes' test_rejects_conflicting_key_modes
 run_test 'rejects unsupported URL scheme' test_rejects_unsupported_url_scheme
@@ -714,5 +865,17 @@ run_test 'archive rejects hardlink' test_validate_archive_rejects_hardlink
 run_test 'archive rejects FIFO' test_validate_archive_rejects_fifo
 run_test 'archive stops when verbose listing fails' test_validate_archive_stops_when_verbose_listing_fails
 run_test 'latest release downloads and extracts valid payload' test_fetch_latest_release_downloads_and_extracts_valid_payload
+run_test 'stores and verifies keyring values' test_stores_and_verifies_keyring_values
+run_test 'verifies keyring value ending in newline' test_verifies_keyring_value_ending_in_newline
+run_test 'writes JSON fallback with mode 600' test_writes_json_fallback_with_mode_600
+run_test 'falls back after keyring store failure' test_falls_back_after_keyring_store_failure
+run_test 'falls back after keyring lookup failure' test_falls_back_after_keyring_lookup_failure
+run_test 'falls back after keyring lookup mismatch' test_falls_back_after_keyring_lookup_mismatch
+run_test 'falls back after partial keyring write' test_falls_back_after_partial_keyring_write
+run_test 'removes existing fallback after keyring success' test_removes_existing_fallback_after_keyring_success
+run_test 'preserves special characters in fallback JSON' test_preserves_special_characters_in_fallback_json
+run_test 'never logs management key while storing credentials' test_never_logs_management_key
+run_test 'fallback warning is bilingual' test_fallback_warning_is_bilingual
+run_test 'main stores credentials after API validation' test_main_stores_credentials_after_api_validation
 
 finish_tests

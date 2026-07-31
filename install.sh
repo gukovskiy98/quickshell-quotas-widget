@@ -173,6 +173,7 @@ _curl_to_file() {
     shift 2
     local curl_bin="${QUOTAS_CURL_BIN:-curl}" status curl_status
     local -a curl_args=(
+        --disable
         --silent
         --show-error
         --location
@@ -199,10 +200,22 @@ _curl_to_file() {
 validate_api() {
     local body_file header_file
 
-    body_file="$(mktemp)" || {
+    if [[ -z "$WORK_DIR" ]]; then
+        WORK_DIR="$(mktemp -d)" || {
+            die 'cannot create temporary installer directory' || return 1
+        }
+    else
+        mkdir -p -- "$WORK_DIR" || {
+            die 'cannot create temporary installer directory' || return 1
+        }
+    fi
+    chmod 700 "$WORK_DIR" || {
+        die 'cannot secure temporary installer directory' || return 1
+    }
+    body_file="$(mktemp "$WORK_DIR/api-response.XXXXXX")" || {
         die 'cannot create temporary API response file' || return 1
     }
-    header_file="$(mktemp)" || {
+    header_file="$(mktemp "$WORK_DIR/api-header.XXXXXX")" || {
         rm -f -- "$body_file"
         die 'cannot create temporary API header file' || return 1
     }
@@ -222,11 +235,15 @@ validate_api() {
     fi
     rm -f -- "$header_file"
 
-    jq -e . "$body_file" >/dev/null 2>&1 || {
+    jq -e -s . "$body_file" >/dev/null 2>&1 || {
         rm -f -- "$body_file"
         die 'Management API returned invalid JSON' || return 1
     }
-    jq -e '.files | type == "array"' "$body_file" >/dev/null 2>&1 || {
+    jq -e -s 'length == 1' "$body_file" >/dev/null 2>&1 || {
+        rm -f -- "$body_file"
+        die 'Management API must return a single JSON document' || return 1
+    }
+    jq -e -s '.[0].files | type == "array"' "$body_file" >/dev/null 2>&1 || {
         rm -f -- "$body_file"
         die 'Management API response is missing a files array' || return 1
     }
@@ -280,7 +297,7 @@ fetch_latest_release() {
 }
 
 validate_archive() {
-    local tar_bin="${QUOTAS_TAR_BIN:-tar}" list_file entry line
+    local tar_bin="${QUOTAS_TAR_BIN:-tar}" list_file verbose_list_file entry line
     local quotas_count=0 popup_count=0 fetcher_count=0
 
     [[ -n "$ARCHIVE_PATH" && -f "$ARCHIVE_PATH" ]] || {
@@ -293,8 +310,12 @@ validate_archive() {
     fi
     PAYLOAD_DIR="${PAYLOAD_DIR:-$WORK_DIR/payload}"
     list_file="$WORK_DIR/archive-entries"
+    verbose_list_file="$WORK_DIR/archive-entries-verbose"
     "$tar_bin" -tzf "$ARCHIVE_PATH" >"$list_file" || {
         die 'cannot read release archive' || return 1
+    }
+    "$tar_bin" -tvzf "$ARCHIVE_PATH" >"$verbose_list_file" || {
+        die 'cannot inspect release archive' || return 1
     }
 
     while IFS= read -r entry || [[ -n "$entry" ]]; do
@@ -326,7 +347,7 @@ validate_archive() {
         [[ "${line:0:1}" == '-' ]] || {
             die 'release archive payload entries must be regular files' || return 1
         }
-    done < <("$tar_bin" -tvzf "$ARCHIVE_PATH")
+    done <"$verbose_list_file"
 
     rm -rf -- "$PAYLOAD_DIR"
     mkdir -p -- "$PAYLOAD_DIR" || {

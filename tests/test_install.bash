@@ -28,6 +28,8 @@ prepare_remote_fixture() {
     MOCK_CURL_LOG="$TEST_TMP_ROOT/curl.log"
     MOCK_CURL_HEADERS_LOG="$TEST_TMP_ROOT/curl-headers.log"
     MOCK_CURL_HEADER_MODES_LOG="$TEST_TMP_ROOT/curl-header-modes.log"
+    MOCK_CURL_OUTPUTS_LOG="$TEST_TMP_ROOT/curl-outputs.log"
+    MOCK_CURL_HEADER_PATHS_LOG="$TEST_TMP_ROOT/curl-header-paths.log"
     QUOTAS_CURL_BIN="$CURL_MOCK"
     QUOTAS_GITHUB_API_BASE='https://github.example'
     QUOTAS_TAR_BIN='tar'
@@ -36,6 +38,8 @@ prepare_remote_fixture() {
     : >"$MOCK_CURL_LOG"
     : >"$MOCK_CURL_HEADERS_LOG"
     : >"$MOCK_CURL_HEADER_MODES_LOG"
+    : >"$MOCK_CURL_OUTPUTS_LOG"
+    : >"$MOCK_CURL_HEADER_PATHS_LOG"
 }
 
 queue_http_text() {
@@ -56,6 +60,7 @@ queue_http_file() {
 run_with_mock_curl() {
     export QUOTAS_CURL_BIN QUOTAS_GITHUB_API_BASE QUOTAS_TAR_BIN
     export MOCK_CURL_QUEUE_DIR MOCK_CURL_LOG MOCK_CURL_HEADERS_LOG MOCK_CURL_HEADER_MODES_LOG
+    export MOCK_CURL_OUTPUTS_LOG MOCK_CURL_HEADER_PATHS_LOG
     export MOCK_CURL_EXIT_CODE
     "$@"
 }
@@ -438,6 +443,12 @@ test_validate_api_rejects_malformed_json() {
     assert_remote_failure 'invalid JSON' validate_api
 }
 
+test_validate_api_rejects_multiple_json_documents() {
+    prepare_remote_fixture
+    queue_http_text 200 $'{"files":[]}\n{"files":[]}'
+    assert_remote_failure 'single JSON document' validate_api
+}
+
 test_validate_api_rejects_missing_files() {
     prepare_remote_fixture
     queue_http_text 200 '{}'
@@ -457,6 +468,37 @@ test_validate_api_accepts_files_array_and_hides_key_from_argv() {
     assert_contains "$(<"$MOCK_CURL_HEADERS_LOG")" 'Authorization: Bearer never-log-this-key' || return 1
     assert_eq '600' "$(<"$MOCK_CURL_HEADER_MODES_LOG")" || return 1
     [[ "$(<"$MOCK_CURL_LOG")" != *"$MANAGEMENT_KEY"* ]] || fail 'management key leaked into curl arguments'
+}
+
+test_every_curl_call_disables_curlrc_first() {
+    prepare_remote_fixture
+    create_release_archive "$TEST_TMP_ROOT/release.tar.gz"
+    queue_http_text 200 '{"files":[]}'
+    queue_latest_release '[{"name":"quickshell-quotas-widget-v1.0.0.tar.gz","browser_download_url":"https://download.example/release.tar.gz"}]'
+    queue_http_file 200 "$TEST_TMP_ROOT/release.tar.gz"
+
+    run_with_mock_curl validate_api || return 1
+    run_with_mock_curl fetch_latest_release || return 1
+
+    local line
+    while IFS= read -r line; do
+        [[ "$line" == 'curl --disable '* ]] || fail "curl must pass --disable first: $line" || return 1
+    done <"$MOCK_CURL_LOG"
+}
+
+test_api_temporary_files_are_owned_by_global_cleanup() {
+    prepare_remote_fixture
+    queue_http_text 200 '{"files":[]}'
+
+    run_with_mock_curl validate_api || return 1
+
+    local path
+    while IFS= read -r path; do
+        [[ "$path" == "$WORK_DIR/"* ]] || fail "API temporary file escaped WORK_DIR: $path" || return 1
+    done < <(cat "$MOCK_CURL_OUTPUTS_LOG" "$MOCK_CURL_HEADER_PATHS_LOG")
+    printf 'leftover\n' >"$WORK_DIR/unexpected-termination-file"
+    cleanup_work_dir || return 1
+    [[ ! -e "$WORK_DIR" ]] || fail 'global cleanup must remove API temporary directory'
 }
 
 test_fetch_latest_release_rejects_missing_asset() {
@@ -522,6 +564,89 @@ test_validate_archive_rejects_extra_top_level_file() {
     assert_remote_failure 'unexpected archive entry' validate_archive
 }
 
+test_validate_archive_rejects_nested_path() {
+    prepare_remote_fixture
+    mkdir -p "$TEST_TMP_ROOT/payload/nested"
+    printf 'qml\n' >"$TEST_TMP_ROOT/payload/nested/Quotas.qml"
+    printf 'qml\n' >"$TEST_TMP_ROOT/payload/QuotasPopup.qml"
+    printf '#!/usr/bin/env bash\nexit 0\n' >"$TEST_TMP_ROOT/payload/get-quotas.sh"
+    tar -C "$TEST_TMP_ROOT/payload" -czf "$TEST_TMP_ROOT/nested.tar.gz" \
+        nested/Quotas.qml QuotasPopup.qml get-quotas.sh
+    ARCHIVE_PATH="$TEST_TMP_ROOT/nested.tar.gz"
+    assert_remote_failure 'unsafe archive' validate_archive
+}
+
+test_validate_archive_rejects_dot_component() {
+    prepare_remote_fixture
+    create_release_archive "$TEST_TMP_ROOT/dot.tar.gz"
+    tar -C "$TEST_TMP_ROOT/payload" --transform='s|^Quotas.qml$|./Quotas.qml|' \
+        -czf "$TEST_TMP_ROOT/dot.tar.gz" Quotas.qml QuotasPopup.qml get-quotas.sh
+    ARCHIVE_PATH="$TEST_TMP_ROOT/dot.tar.gz"
+    assert_remote_failure 'unsafe archive' validate_archive
+}
+
+test_validate_archive_rejects_symlink() {
+    prepare_remote_fixture
+    mkdir -p "$TEST_TMP_ROOT/payload"
+    printf 'target\n' >"$TEST_TMP_ROOT/payload/target"
+    ln -s target "$TEST_TMP_ROOT/payload/Quotas.qml"
+    printf 'qml\n' >"$TEST_TMP_ROOT/payload/QuotasPopup.qml"
+    printf '#!/usr/bin/env bash\nexit 0\n' >"$TEST_TMP_ROOT/payload/get-quotas.sh"
+    tar -C "$TEST_TMP_ROOT/payload" -czf "$TEST_TMP_ROOT/symlink.tar.gz" \
+        Quotas.qml QuotasPopup.qml get-quotas.sh
+    ARCHIVE_PATH="$TEST_TMP_ROOT/symlink.tar.gz"
+    assert_remote_failure 'regular files' validate_archive
+}
+
+test_validate_archive_rejects_hardlink() {
+    prepare_remote_fixture
+    mkdir -p "$TEST_TMP_ROOT/payload"
+    printf 'qml\n' >"$TEST_TMP_ROOT/payload/Quotas.qml"
+    ln "$TEST_TMP_ROOT/payload/Quotas.qml" "$TEST_TMP_ROOT/payload/QuotasPopup.qml"
+    printf '#!/usr/bin/env bash\nexit 0\n' >"$TEST_TMP_ROOT/payload/get-quotas.sh"
+    tar -C "$TEST_TMP_ROOT/payload" -czf "$TEST_TMP_ROOT/hardlink.tar.gz" \
+        Quotas.qml QuotasPopup.qml get-quotas.sh
+    ARCHIVE_PATH="$TEST_TMP_ROOT/hardlink.tar.gz"
+    assert_remote_failure 'regular files' validate_archive
+}
+
+test_validate_archive_rejects_fifo() {
+    prepare_remote_fixture
+    mkdir -p "$TEST_TMP_ROOT/payload"
+    mkfifo "$TEST_TMP_ROOT/payload/Quotas.qml"
+    printf 'qml\n' >"$TEST_TMP_ROOT/payload/QuotasPopup.qml"
+    printf '#!/usr/bin/env bash\nexit 0\n' >"$TEST_TMP_ROOT/payload/get-quotas.sh"
+    tar -C "$TEST_TMP_ROOT/payload" -czf "$TEST_TMP_ROOT/fifo.tar.gz" \
+        Quotas.qml QuotasPopup.qml get-quotas.sh
+    ARCHIVE_PATH="$TEST_TMP_ROOT/fifo.tar.gz"
+    assert_remote_failure 'regular files' validate_archive
+}
+
+test_validate_archive_stops_when_verbose_listing_fails() {
+    prepare_remote_fixture
+    create_release_archive "$TEST_TMP_ROOT/release.tar.gz"
+    local real_tar mock_tar="$TEST_TMP_ROOT/mock-tar" extract_log="$TEST_TMP_ROOT/extract.log"
+    real_tar="$(command -v tar)"
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'set -euo pipefail' \
+        'if [[ "$1" == "-tvzf" ]]; then' \
+        '    "$REAL_TAR" "$@"' \
+        '    exit 23' \
+        'fi' \
+        'if [[ "$1" == "-xzf" ]]; then' \
+        '    : >"$MOCK_TAR_EXTRACT_LOG"' \
+        'fi' \
+        'exec "$REAL_TAR" "$@"' >"$mock_tar"
+    chmod +x "$mock_tar"
+    ARCHIVE_PATH="$TEST_TMP_ROOT/release.tar.gz"
+    QUOTAS_TAR_BIN="$mock_tar"
+    export REAL_TAR="$real_tar" MOCK_TAR_EXTRACT_LOG="$extract_log"
+
+    assert_remote_failure 'cannot inspect release archive' validate_archive || return 1
+    [[ ! -e "$extract_log" ]] || fail 'archive extraction must not run after verbose listing failure'
+}
+
 test_fetch_latest_release_downloads_and_extracts_valid_payload() {
     prepare_remote_fixture
     create_release_archive "$TEST_TMP_ROOT/release.tar.gz"
@@ -569,9 +694,12 @@ run_test 'API validation rejects HTTP 401' test_validate_api_rejects_401
 run_test 'API validation rejects HTTP 403' test_validate_api_rejects_403
 run_test 'API validation rejects HTTP 500' test_validate_api_rejects_500
 run_test 'API validation rejects malformed JSON' test_validate_api_rejects_malformed_json
+run_test 'API validation rejects multiple JSON documents' test_validate_api_rejects_multiple_json_documents
 run_test 'API validation rejects missing files' test_validate_api_rejects_missing_files
 run_test 'API validation rejects non-array files' test_validate_api_rejects_non_array_files
 run_test 'API validation accepts files array securely' test_validate_api_accepts_files_array_and_hides_key_from_argv
+run_test 'every curl call disables curlrc first' test_every_curl_call_disables_curlrc_first
+run_test 'API temporary files are owned by global cleanup' test_api_temporary_files_are_owned_by_global_cleanup
 run_test 'latest release rejects missing asset' test_fetch_latest_release_rejects_missing_asset
 run_test 'latest release rejects duplicate assets' test_fetch_latest_release_rejects_duplicate_assets
 run_test 'archive rejects parent entry' test_validate_archive_rejects_parent_entry
@@ -579,6 +707,12 @@ run_test 'archive rejects absolute entry' test_validate_archive_rejects_absolute
 run_test 'archive rejects missing payload file' test_validate_archive_rejects_missing_payload_file
 run_test 'archive rejects duplicate payload file' test_validate_archive_rejects_duplicate_payload_file
 run_test 'archive rejects extra top-level file' test_validate_archive_rejects_extra_top_level_file
+run_test 'archive rejects nested path' test_validate_archive_rejects_nested_path
+run_test 'archive rejects dot component' test_validate_archive_rejects_dot_component
+run_test 'archive rejects symlink' test_validate_archive_rejects_symlink
+run_test 'archive rejects hardlink' test_validate_archive_rejects_hardlink
+run_test 'archive rejects FIFO' test_validate_archive_rejects_fifo
+run_test 'archive stops when verbose listing fails' test_validate_archive_stops_when_verbose_listing_fails
 run_test 'latest release downloads and extracts valid payload' test_fetch_latest_release_downloads_and_extracts_valid_payload
 
 finish_tests

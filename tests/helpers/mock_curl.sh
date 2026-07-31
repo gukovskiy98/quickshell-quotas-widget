@@ -19,11 +19,17 @@ while (($#)); do
     case "$1" in
         --output)
             output_path="$2"
+            if [[ -n "${MOCK_CURL_OUTPUTS_LOG:-}" ]]; then
+                printf '%s\n' "$output_path" >>"$MOCK_CURL_OUTPUTS_LOG"
+            fi
             shift 2
             ;;
         --header)
             if [[ "$2" == @* ]]; then
                 header_files+=("${2#@}")
+                if [[ -n "${MOCK_CURL_HEADER_PATHS_LOG:-}" ]]; then
+                    printf '%s\n' "${2#@}" >>"$MOCK_CURL_HEADER_PATHS_LOG"
+                fi
             fi
             shift 2
             ;;

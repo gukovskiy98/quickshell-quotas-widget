@@ -35,6 +35,9 @@ done
 
 for header_file in "${header_files[@]}"; do
     cat -- "$header_file" >>"$MOCK_CURL_HEADERS_LOG"
+    if [[ -n "${MOCK_CURL_HEADER_MODES_LOG:-}" ]]; then
+        stat -c '%a' "$header_file" >>"$MOCK_CURL_HEADER_MODES_LOG"
+    fi
 done
 
 counter_file="$MOCK_CURL_QUEUE_DIR/.counter"

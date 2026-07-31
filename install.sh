@@ -8,6 +8,9 @@ INSTALL_DIR=""
 QS_BIN=""
 CONFIG_ROOT=""
 HELP_REQUESTED=0
+WORK_DIR=""
+ARCHIVE_PATH=""
+PAYLOAD_DIR=""
 
 usage() {
     cat <<'EOF'
@@ -125,6 +128,213 @@ parse_args() {
 
     [[ -n "$API_URL" ]] || {
         die 'missing required flag: --api-url' || return 1
+    }
+}
+
+read_management_key() {
+    local tty_path tty_in tty_out
+
+    case "$KEY_INPUT_MODE" in
+        argument)
+            ;;
+        stdin)
+            IFS= read -r MANAGEMENT_KEY || [[ -n "$MANAGEMENT_KEY" ]] || {
+                die 'management key input is empty' || return 1
+            }
+            ;;
+        tty)
+            tty_path="${QUOTAS_TTY_PATH:-/dev/tty}"
+            exec {tty_in}<"$tty_path" || {
+                die 'cannot open terminal for management key input' || return 1
+            }
+            exec {tty_out}>>"$tty_path" || {
+                exec {tty_in}<&-
+                die 'cannot open terminal for management key prompt' || return 1
+            }
+            printf '%b' \
+                'Management key / \xD0\x9A\xD0\xBB\xD1\x8E\xD1\x87 \xD1\x83\xD0\xBF\xD1\x80\xD0\xB0\xD0\xB2\xD0\xBB\xD0\xB5\xD0\xBD\xD0\xB8\xD1\x8F: ' >&"$tty_out"
+            IFS= read -r -s -u "$tty_in" MANAGEMENT_KEY || [[ -n "$MANAGEMENT_KEY" ]]
+            printf '\n' >&"$tty_out"
+            exec {tty_in}<&-
+            exec {tty_out}>&-
+            ;;
+        *)
+            die 'invalid management key input mode' || return 1
+            ;;
+    esac
+
+    [[ -n "$MANAGEMENT_KEY" ]] || {
+        die 'management key input is empty' || return 1
+    }
+}
+
+_curl_to_file() {
+    local output_file="$1" url="$2"
+    shift 2
+    local curl_bin="${QUOTAS_CURL_BIN:-curl}" status curl_status
+    local -a curl_args=(
+        --silent
+        --show-error
+        --location
+        --connect-timeout 10
+        --max-time 30
+        --output "$output_file"
+        --write-out '%{http_code}'
+    )
+
+    curl_args+=("$@")
+    if status="$("$curl_bin" "${curl_args[@]}" "$url")"; then
+        curl_status=0
+    else
+        curl_status=$?
+    fi
+    ((curl_status == 0)) || {
+        die "curl transport failure (exit $curl_status)" || return 1
+    }
+    [[ "$status" =~ ^2[0-9][0-9]$ ]] || {
+        die "remote server returned HTTP $status" || return 1
+    }
+}
+
+validate_api() {
+    local body_file header_file
+
+    body_file="$(mktemp)" || {
+        die 'cannot create temporary API response file' || return 1
+    }
+    header_file="$(mktemp)" || {
+        rm -f -- "$body_file"
+        die 'cannot create temporary API header file' || return 1
+    }
+    chmod 600 "$body_file" "$header_file" || {
+        rm -f -- "$body_file" "$header_file"
+        die 'cannot secure temporary API request files' || return 1
+    }
+    printf 'Authorization: Bearer %s\n' "$MANAGEMENT_KEY" >"$header_file" || {
+        rm -f -- "$body_file" "$header_file"
+        die 'cannot write temporary API header file' || return 1
+    }
+
+    if ! _curl_to_file "$body_file" "$API_URL/v0/management/auth-files" \
+        --request GET --header "@$header_file"; then
+        rm -f -- "$body_file" "$header_file"
+        return 1
+    fi
+    rm -f -- "$header_file"
+
+    jq -e . "$body_file" >/dev/null 2>&1 || {
+        rm -f -- "$body_file"
+        die 'Management API returned invalid JSON' || return 1
+    }
+    jq -e '.files | type == "array"' "$body_file" >/dev/null 2>&1 || {
+        rm -f -- "$body_file"
+        die 'Management API response is missing a files array' || return 1
+    }
+    rm -f -- "$body_file"
+}
+
+cleanup_work_dir() {
+    [[ -z "$WORK_DIR" ]] || rm -rf -- "$WORK_DIR"
+}
+
+fetch_latest_release() {
+    local github_api="${QUOTAS_GITHUB_API_BASE:-https://api.github.com}"
+    local metadata_file asset_count download_url
+
+    if [[ -z "$WORK_DIR" ]]; then
+        WORK_DIR="$(mktemp -d)" || {
+            die 'cannot create temporary installer directory' || return 1
+        }
+    else
+        mkdir -p -- "$WORK_DIR" || {
+            die 'cannot create temporary installer directory' || return 1
+        }
+    fi
+    chmod 700 "$WORK_DIR" || {
+        die 'cannot secure temporary installer directory' || return 1
+    }
+    metadata_file="$WORK_DIR/latest-release.json"
+    ARCHIVE_PATH="$WORK_DIR/release.tar.gz"
+    PAYLOAD_DIR="$WORK_DIR/payload"
+
+    _curl_to_file "$metadata_file" \
+        "$github_api/repos/gukovskiy98/quickshell-quotas-widget/releases/latest" \
+        --request GET || return 1
+    jq -e '.assets | type == "array"' "$metadata_file" >/dev/null 2>&1 || {
+        die 'GitHub latest release response is invalid' || return 1
+    }
+    asset_count="$(jq -r '[.assets[] | select(.name? | strings | test("^quickshell-quotas-widget-v[^/]+\\.tar\\.gz$"))] | length' "$metadata_file")" || {
+        die 'GitHub latest release response is invalid' || return 1
+    }
+    [[ "$asset_count" == '1' ]] || {
+        die 'latest release must contain exactly one matching archive asset' || return 1
+    }
+    download_url="$(jq -r '.assets[] | select(.name? | strings | test("^quickshell-quotas-widget-v[^/]+\\.tar\\.gz$")) | .browser_download_url // empty' "$metadata_file")" || {
+        die 'GitHub latest release response is invalid' || return 1
+    }
+    [[ "$download_url" == http://* || "$download_url" == https://* ]] || {
+        die 'latest release archive has an invalid download URL' || return 1
+    }
+
+    _curl_to_file "$ARCHIVE_PATH" "$download_url" --request GET
+}
+
+validate_archive() {
+    local tar_bin="${QUOTAS_TAR_BIN:-tar}" list_file entry line
+    local quotas_count=0 popup_count=0 fetcher_count=0
+
+    [[ -n "$ARCHIVE_PATH" && -f "$ARCHIVE_PATH" ]] || {
+        die 'release archive is missing' || return 1
+    }
+    if [[ -z "$WORK_DIR" ]]; then
+        WORK_DIR="$(mktemp -d)" || {
+            die 'cannot create temporary installer directory' || return 1
+        }
+    fi
+    PAYLOAD_DIR="${PAYLOAD_DIR:-$WORK_DIR/payload}"
+    list_file="$WORK_DIR/archive-entries"
+    "$tar_bin" -tzf "$ARCHIVE_PATH" >"$list_file" || {
+        die 'cannot read release archive' || return 1
+    }
+
+    while IFS= read -r entry || [[ -n "$entry" ]]; do
+        [[ -n "$entry" && "$entry" != /* ]] || {
+            die 'unsafe archive entry' || return 1
+        }
+        case "$entry" in
+            *'//'*|'.'|'..'|'./'*|'../'*|*'/./'*|*'/../'*|*'/.'|*'/..')
+                die 'unsafe archive entry' || return 1
+                ;;
+        esac
+        [[ "$entry" != */* ]] || {
+            die 'unsafe archive entry' || return 1
+        }
+        case "$entry" in
+            Quotas.qml) quotas_count=$((quotas_count + 1)) ;;
+            QuotasPopup.qml) popup_count=$((popup_count + 1)) ;;
+            get-quotas.sh) fetcher_count=$((fetcher_count + 1)) ;;
+            *)
+                die "unexpected archive entry: $entry" || return 1
+                ;;
+        esac
+    done <"$list_file"
+
+    [[ $quotas_count -eq 1 && $popup_count -eq 1 && $fetcher_count -eq 1 ]] || {
+        die 'release archive must contain each payload file exactly once' || return 1
+    }
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "${line:0:1}" == '-' ]] || {
+            die 'release archive payload entries must be regular files' || return 1
+        }
+    done < <("$tar_bin" -tvzf "$ARCHIVE_PATH")
+
+    rm -rf -- "$PAYLOAD_DIR"
+    mkdir -p -- "$PAYLOAD_DIR" || {
+        die 'cannot create payload directory' || return 1
+    }
+    "$tar_bin" -xzf "$ARCHIVE_PATH" -C "$PAYLOAD_DIR" --no-same-owner --no-same-permissions || {
+        rm -rf -- "$PAYLOAD_DIR"
+        die 'cannot extract release archive' || return 1
     }
 }
 
@@ -296,8 +506,13 @@ main() {
     resolve_layout || return 1
     require_dependencies || return 1
     validate_end4_layout || return 1
+    read_management_key || return 1
+    validate_api || return 1
+    fetch_latest_release || return 1
+    validate_archive || return 1
 }
 
 if [[ "${QUOTAS_INSTALLER_SOURCE_ONLY:-0}" != "1" ]]; then
+    trap cleanup_work_dir EXIT
     main "$@"
 fi

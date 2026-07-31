@@ -18,6 +18,7 @@ declare -a TX_BACKUP_PATHS=()
 declare -a TX_CREATED_PATHS=()
 TX_ACTIVE=0
 TX_TIMESTAMP=""
+TX_ROLLING_BACK=0
 
 usage() {
     cat <<'EOF'
@@ -266,6 +267,7 @@ begin_transaction() {
     TX_BACKUP_PATHS=()
     TX_CREATED_PATHS=()
     TX_TIMESTAMP="${QUOTAS_TIMESTAMP:-$(date +%Y%m%d-%H%M%S)}"
+    TX_ROLLING_BACK=0
     TX_ACTIVE=1
 }
 
@@ -309,28 +311,46 @@ rollback_transaction() {
     local index status=0
 
     ((TX_ACTIVE == 1)) || return 0
-    TX_ACTIVE=0
+    ((TX_ROLLING_BACK == 0)) || return 1
+    TX_ROLLING_BACK=1
     for ((index = ${#TX_REPLACED_PATHS[@]} - 1; index >= 0; index--)); do
-        cp -p -- "${TX_BACKUP_PATHS[index]}" "${TX_REPLACED_PATHS[index]}" || status=1
+        _restore_file "${TX_BACKUP_PATHS[index]}" "${TX_REPLACED_PATHS[index]}" || status=1
     done
     for ((index = ${#TX_CREATED_PATHS[@]} - 1; index >= 0; index--)); do
         rm -f -- "${TX_CREATED_PATHS[index]}" || status=1
     done
+    TX_ROLLING_BACK=0
     ((status == 0)) || {
         warn 'installation rollback was incomplete; timestamped backups were preserved'
         return 1
     }
+    TX_ACTIVE=0
 }
 
 commit_transaction() {
     TX_ACTIVE=0
+    TX_ROLLING_BACK=0
     TX_REPLACED_PATHS=()
     TX_BACKUP_PATHS=()
     TX_CREATED_PATHS=()
 }
 
+_restore_file() {
+    local backup="$1" destination="$2" tmp_file
+
+    [[ -f "$backup" && ! -L "$backup" ]] || return 1
+    if [[ -e "$destination" ]]; then
+        [[ -f "$destination" && ! -L "$destination" ]] || return 1
+    fi
+    tmp_file="$(mktemp "$destination.rollback.XXXXXX")" || return 1
+    if ! cp -p -- "$backup" "$tmp_file" || ! mv -fT -- "$tmp_file" "$destination"; then
+        rm -f -- "$tmp_file"
+        return 1
+    fi
+}
+
 _install_file() {
-    local source="$1" destination="$2" mode="$3" tmp_file
+    local source="$1" destination="$2" mode="$3" tmp_file current_mode
 
     [[ -f "$source" && ! -L "$source" ]] || {
         die "missing safe payload file: $source" || return 1
@@ -339,7 +359,12 @@ _install_file() {
         [[ -f "$destination" && ! -L "$destination" ]] || {
             die "unsafe installation destination: $destination" || return 1
         }
-        cmp -s -- "$source" "$destination" && return 0
+        current_mode="$(stat -c '%a' "$destination")" || {
+            die "cannot inspect installation destination: $destination" || return 1
+        }
+        if cmp -s -- "$source" "$destination" && [[ "$current_mode" == "$mode" ]]; then
+            return 0
+        fi
         ((TX_ACTIVE == 0)) || backup_changed_file "$destination" || return 1
     else
         ((TX_ACTIVE == 0)) || track_created_file "$destination" || return 1
@@ -491,7 +516,7 @@ store_keyring_credentials() {
 }
 
 write_fallback_config() {
-    local credential_input tmp_config
+    local credential_input tmp_config current_mode
 
     mkdir -p -- "$INSTALL_DIR" || {
         die 'cannot create credential configuration directory' || return 1
@@ -529,7 +554,11 @@ write_fallback_config() {
             rm -f -- "$tmp_config"
             die 'credential fallback destination is unsafe' || return 1
         }
-        if cmp -s -- "$tmp_config" "$FALLBACK_CONFIG"; then
+        current_mode="$(stat -c '%a' "$FALLBACK_CONFIG")" || {
+            rm -f -- "$tmp_config"
+            die 'cannot inspect credential fallback configuration' || return 1
+        }
+        if cmp -s -- "$tmp_config" "$FALLBACK_CONFIG" && [[ "$current_mode" == '600' ]]; then
             rm -f -- "$tmp_config"
             return 0
         fi
@@ -762,8 +791,7 @@ validate_end4_layout() {
 
 integrate_bar_content() {
     local bar_file="$CONFIG_ROOT/modules/ii/bar/BarContent.qml"
-    local transformed
-    local start_count end_count awk_status
+    local transformed awk_status
 
     if [[ -z "$WORK_DIR" ]]; then
         WORK_DIR="$(mktemp -d)" || {
@@ -779,121 +807,191 @@ integrate_bar_content() {
     }
     transformed="$WORK_DIR/BarContent.qml.transformed"
 
-    start_count="$(grep -c '^[[:space:]]*// quickshell-quotas-widget:start[[:space:]]*$' "$bar_file" || true)"
-    end_count="$(grep -c '^[[:space:]]*// quickshell-quotas-widget:end[[:space:]]*$' "$bar_file" || true)"
-    if [[ "$start_count" == '1' && "$end_count" == '1' ]]; then
-        return 0
-    fi
-    [[ "$start_count" == '0' && "$end_count" == '0' ]] || {
-        die 'BarContent.qml has invalid managed markers' || return 1
-    }
-
     if awk '
-        function sanitize(line,    out, i, c, nextc, quote, escaped) {
-            out = ""
+        BEGIN {
+            RS = "\0"
+            ORS = ""
+        }
+        function remove_marker_block(text,    i, block_start, block_end) {
+            block_start = 1
+            for (i = 1; i < marker_start_line; i++) block_start += length(lines[i]) + 1
+            block_end = block_start - 1
+            for (i = marker_start_line; i <= marker_end_line; i++) {
+                block_end += length(lines[i])
+                if (i < marker_end_line) block_end++
+            }
+            if (substr(text, block_end + 1, 1) == "\n") {
+                return substr(text, 1, block_start - 1) substr(text, block_end + 2)
+            }
+            if (block_start > 1 && substr(text, block_start - 1, 1) == "\n") {
+                return substr(text, 1, block_start - 2) substr(text, block_end + 1)
+            }
+            return substr(text, 1, block_start - 1) substr(text, block_end + 1)
+        }
+        function inspect_markers(text,    i, indent) {
+            line_count = split(text, lines, "\n")
+            start_count = 0
+            end_count = 0
+            for (i = 1; i <= line_count; i++) {
+                if (lines[i] ~ /^[[:space:]]*\/\/ quickshell-quotas-widget:start[[:space:]]*$/) {
+                    start_count++
+                    marker_start_line = i
+                }
+                if (lines[i] ~ /^[[:space:]]*\/\/ quickshell-quotas-widget:end[[:space:]]*$/) {
+                    end_count++
+                    marker_end_line = i
+                }
+            }
+            if (start_count == 0 && end_count == 0) return text
+            if (start_count != 1 || end_count != 1 || marker_end_line != marker_start_line + 5) exit 43
+            match(lines[marker_start_line], /^[[:space:]]*/)
+            indent = substr(lines[marker_start_line], RSTART, RLENGTH)
+            if (lines[marker_start_line] != indent "// quickshell-quotas-widget:start" ||
+                lines[marker_start_line + 1] != indent "Quotas {" ||
+                lines[marker_start_line + 2] != indent "    visible: true" ||
+                lines[marker_start_line + 3] != indent "    Layout.fillWidth: false" ||
+                lines[marker_start_line + 4] != indent "}" ||
+                lines[marker_start_line + 5] != indent "// quickshell-quotas-widget:end") exit 43
+            had_markers = 1
+            return remove_marker_block(text)
+        }
+        function nearest_bar(    level) {
+            for (level = depth; level >= 1; level--) {
+                if (frame_bar[level]) return frame_bar[level]
+            }
+            return 0
+        }
+        function flush_token() {
+            if (token == "") return
+            if (expect_id_depth == depth && frame_type[depth] == "BarGroup") {
+                if (token == "leftCenterGroup") bar_has_id[frame_bar[depth]] = 1
+                expect_id_depth = 0
+            }
+            last_ident = token
+            token = ""
+        }
+        function reset_token_context() {
+            token = ""
+            last_ident = ""
+            expect_id_depth = 0
+        }
+        function scan(text,    i, c, nextc, component, owner, bar, line_start, line, suffix, block, transformed) {
+            depth = 0
             quote = ""
             escaped = 0
-            for (i = 1; i <= length(line); i++) {
-                c = substr(line, i, 1)
-                nextc = substr(line, i + 1, 1)
+            line_comment = 0
+            bar_count = 0
+            resource_count = 0
+            reset_token_context()
+            for (i = 1; i <= length(text); i++) {
+                c = substr(text, i, 1)
+                nextc = substr(text, i + 1, 1)
+                if (line_comment) {
+                    if (c == "\n") line_comment = 0
+                    continue
+                }
                 if (quote != "") {
-                    if (escaped) {
-                        escaped = 0
-                    } else if (c == "\\") {
-                        escaped = 1
-                    } else if (c == quote) {
-                        quote = ""
-                    }
-                    out = out " "
-                } else if (c == "\"" || c == sprintf("%c", 39)) {
+                    if (escaped) escaped = 0
+                    else if (c == "\\") escaped = 1
+                    else if (c == quote) quote = ""
+                    continue
+                }
+                if (c == "/" && nextc == "/") {
+                    flush_token()
+                    line_comment = 1
+                    i++
+                    continue
+                }
+                if (c == "\"" || c == sprintf("%c", 39)) {
+                    flush_token()
                     quote = c
-                    out = out " "
-                } else if (c == "/" && nextc == "/") {
-                    break
-                } else {
-                    out = out c
+                    continue
+                }
+                if (c ~ /[[:alnum:]_]/) {
+                    token = token c
+                    continue
+                }
+                flush_token()
+                if (c ~ /[[:space:]]/) continue
+                if (c == ":") {
+                    if (last_ident == "id" && frame_type[depth] == "BarGroup") expect_id_depth = depth
+                    last_ident = ""
+                    continue
+                }
+                if (c == "{") {
+                    component = last_ident
+                    depth++
+                    frame_type[depth] = component
+                    frame_bar[depth] = nearest_bar()
+                    if (component == "BarGroup") {
+                        bar_count++
+                        frame_bar[depth] = bar_count
+                    } else if (component == "Resources") {
+                        resource_count++
+                        frame_resource[depth] = resource_count
+                        resource_owner[resource_count] = frame_bar[depth]
+                        resource_open[resource_count] = i
+                    }
+                    reset_token_context()
+                    continue
+                }
+                if (c == "}") {
+                    if (depth < 1) exit 44
+                    if (frame_type[depth] == "Resources") resource_close[frame_resource[depth]] = i
+                    delete frame_type[depth]
+                    delete frame_bar[depth]
+                    delete frame_resource[depth]
+                    depth--
+                    reset_token_context()
+                    continue
+                }
+                reset_token_context()
+            }
+            flush_token()
+            if (depth != 0 || quote != "") exit 44
+
+            target_count = 0
+            for (bar = 1; bar <= bar_count; bar++) {
+                if (bar_has_id[bar]) {
+                    target_count++
+                    target_bar = bar
                 }
             }
-            return out
-        }
-        function braces(line,    clean, i, c, delta) {
-            clean = sanitize(line)
-            delta = 0
-            for (i = 1; i <= length(clean); i++) {
-                c = substr(clean, i, 1)
-                if (c == "{") delta++
-                else if (c == "}") delta--
+            if (target_count != 1) exit 41
+            target_resource_count = 0
+            for (i = 1; i <= resource_count; i++) {
+                if (resource_owner[i] == target_bar && resource_close[i]) {
+                    target_resource_count++
+                    target_resource = i
+                }
             }
-            return delta
-        }
-        function opens_component(line, name,    clean) {
-            clean = sanitize(line)
-            return clean ~ ("(^|[^[:alnum:]_])" name "[[:space:]]*\\{")
+            if (target_resource_count != 1) exit 42
+
+            line_start = resource_open[target_resource]
+            while (line_start > 1 && substr(text, line_start - 1, 1) != "\n") line_start--
+            line = substr(text, line_start, resource_open[target_resource] - line_start)
+            match(line, /^[[:space:]]*/)
+            indent = substr(line, RSTART, RLENGTH)
+            block = indent "// quickshell-quotas-widget:start\n" \
+                indent "Quotas {\n" \
+                indent "    visible: true\n" \
+                indent "    Layout.fillWidth: false\n" \
+                indent "}\n" \
+                indent "// quickshell-quotas-widget:end"
+            suffix = substr(text, resource_close[target_resource] + 1)
+            if (substr(suffix, 1, 1) == "\n") {
+                transformed = substr(text, 1, resource_close[target_resource]) "\n" block suffix
+            } else {
+                transformed = substr(text, 1, resource_close[target_resource]) "\n" block "\n" suffix
+            }
+            return transformed
         }
         {
-            lines[NR] = $0
-            delta[NR] = braces($0)
-        }
-        END {
-            group_count = 0
-            for (i = 1; i <= NR; i++) {
-                if (!opens_component(lines[i], "BarGroup")) continue
-                depth = 0
-                opened = 1
-                close_line = 0
-                has_id = 0
-                for (j = i; j <= NR; j++) {
-                    if (sanitize(lines[j]) ~ /(^|[[:space:];{])id[[:space:]]*:[[:space:]]*leftCenterGroup([^[:alnum:]_]|$)/) has_id = 1
-                    depth += delta[j]
-                    if (opened && depth == 0) {
-                        close_line = j
-                        break
-                    }
-                    if (opened && depth < 0) break
-                }
-                if (close_line && has_id) {
-                    group_count++
-                    group_start[group_count] = i
-                    group_end[group_count] = close_line
-                }
-            }
-            if (group_count != 1) exit 41
-
-            resources_count = 0
-            for (i = group_start[1]; i <= group_end[1]; i++) {
-                if (!opens_component(lines[i], "Resources")) continue
-                depth = 0
-                opened = 1
-                close_line = 0
-                for (j = i; j <= group_end[1]; j++) {
-                    depth += delta[j]
-                    if (opened && depth == 0) {
-                        close_line = j
-                        break
-                    }
-                    if (opened && depth < 0) break
-                }
-                if (close_line) {
-                    resources_count++
-                    resource_line = i
-                    resource_end = close_line
-                }
-            }
-            if (resources_count != 1) exit 42
-
-            match(lines[resource_line], /^[[:space:]]*/)
-            indent = substr(lines[resource_line], RSTART, RLENGTH)
-            for (i = 1; i <= NR; i++) {
-                print lines[i]
-                if (i == resource_end) {
-                    print indent "// quickshell-quotas-widget:start"
-                    print indent "Quotas {"
-                    print indent "    visible: true"
-                    print indent "    Layout.fillWidth: false"
-                    print indent "}"
-                    print indent "// quickshell-quotas-widget:end"
-                }
-            }
+            original = $0
+            base = inspect_markers(original)
+            transformed = scan(base)
+            if (had_markers && transformed != original) exit 43
+            print had_markers ? original : transformed
         }
     ' "$bar_file" >"$transformed"; then
         awk_status=0
@@ -906,18 +1004,16 @@ integrate_bar_content() {
             rm -f -- "$transformed"
             die 'BarContent.qml must contain exactly one safe insertion point' || return 1
             ;;
+        43)
+            rm -f -- "$transformed"
+            die 'BarContent.qml has an invalid managed block or managed markers' || return 1
+            ;;
         *)
             rm -f -- "$transformed"
             die 'cannot transform BarContent.qml safely' || return 1
             ;;
     esac
 
-    start_count="$(grep -c '^[[:space:]]*// quickshell-quotas-widget:start[[:space:]]*$' "$transformed" || true)"
-    end_count="$(grep -c '^[[:space:]]*// quickshell-quotas-widget:end[[:space:]]*$' "$transformed" || true)"
-    [[ "$start_count" == '1' && "$end_count" == '1' ]] || {
-        rm -f -- "$transformed"
-        die 'BarContent.qml transformation produced invalid managed markers' || return 1
-    }
     _install_file "$transformed" "$bar_file" 644
 }
 
@@ -967,13 +1063,14 @@ restart_quickshell() {
 handle_transaction_failure() {
     local status=$?
 
-    ((TX_ACTIVE == 0)) || rollback_transaction || true
+    ((TX_ACTIVE == 0 || TX_ROLLING_BACK == 1)) || rollback_transaction || true
     return "$status"
 }
 
 handle_transaction_signal() {
     local status="$1"
 
+    ((TX_ROLLING_BACK == 0)) || return 0
     ((TX_ACTIVE == 0)) || rollback_transaction || true
     exit "$status"
 }

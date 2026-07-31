@@ -22,6 +22,7 @@ reset_installer_state() {
     CREDENTIAL_BACKEND=""
     TX_ACTIVE=0
     TX_TIMESTAMP=""
+    TX_ROLLING_BACK=0
     TX_REPLACED_PATHS=()
     TX_BACKUP_PATHS=()
     TX_CREATED_PATHS=()
@@ -992,6 +993,46 @@ EOF
     assert_contains "$(<"$bar_file")" $'        Resources {}\n        // quickshell-quotas-widget:start'
 }
 
+test_inserts_inside_fully_inline_left_center_group() {
+    prepare_end4_fixture
+    local bar_file="$CONFIG_ROOT/modules/ii/bar/BarContent.qml"
+
+    printf '%s\n' 'Item { BarGroup { id: leftCenterGroup Resources {} Media {} } }' >"$bar_file"
+    integrate_bar_content || return 1
+    assert_contains "$(<"$bar_file")" $'Resources {}\n// quickshell-quotas-widget:start\nQuotas {\n    visible: true\n    Layout.fillWidth: false\n}\n// quickshell-quotas-widget:end\n Media {} }'
+}
+
+test_rejects_multiple_inline_resources_in_target_group() {
+    prepare_end4_fixture
+    local bar_file="$CONFIG_ROOT/modules/ii/bar/BarContent.qml"
+
+    printf '%s\n' 'Item { BarGroup { id: leftCenterGroup Resources {} Resources {} Media {} } }' >"$bar_file"
+    assert_bar_integration_failure 'exactly one'
+}
+
+test_rejects_multiple_inline_target_groups() {
+    prepare_end4_fixture
+    local bar_file="$CONFIG_ROOT/modules/ii/bar/BarContent.qml"
+
+    printf '%s\n' 'Item { BarGroup { id: leftCenterGroup Resources {} Media {} } BarGroup { id: leftCenterGroup Resources {} Media {} } }' >"$bar_file"
+    assert_bar_integration_failure 'exactly one'
+}
+
+test_preserves_unterminated_final_line() {
+    prepare_end4_fixture
+    local bar_file="$CONFIG_ROOT/modules/ii/bar/BarContent.qml"
+    local expected="$TEST_TMP_ROOT/expected.qml" file_size last_byte
+
+    printf '%s' $'Item {\n    BarGroup {\n        id: leftCenterGroup\n        Resources {}\n        Media {}\n    }\n}' >"$bar_file"
+    printf '%s' $'Item {\n    BarGroup {\n        id: leftCenterGroup\n        Resources {}\n        // quickshell-quotas-widget:start\n        Quotas {\n            visible: true\n            Layout.fillWidth: false\n        }\n        // quickshell-quotas-widget:end\n        Media {}\n    }\n}' >"$expected"
+
+    integrate_bar_content || return 1
+    cmp -s "$expected" "$bar_file" || fail 'insertion changed unrelated bytes or final newline state' || return 1
+    file_size="$(wc -c <"$bar_file")"
+    last_byte="$(od -An -t u1 -j "$((file_size - 1))" -N 1 "$bar_file" | tr -d ' ')"
+    [[ "$last_byte" != '10' ]] || fail 'unterminated input gained a final newline'
+}
+
 test_bar_integration_is_idempotent() {
     prepare_end4_fixture
     local bar_file="$CONFIG_ROOT/modules/ii/bar/BarContent.qml"
@@ -1000,6 +1041,17 @@ test_bar_integration_is_idempotent() {
     integrate_bar_content || return 1
     assert_eq '1' "$(grep -c '^ *// quickshell-quotas-widget:start$' "$bar_file")" || return 1
     assert_eq '1' "$(grep -c '^ *// quickshell-quotas-widget:end$' "$bar_file")"
+}
+
+test_valid_managed_block_preserves_all_existing_bytes() {
+    prepare_end4_fixture
+    local bar_file="$CONFIG_ROOT/modules/ii/bar/BarContent.qml" before="$TEST_TMP_ROOT/before.qml"
+
+    printf '%s' $'\nItem {\n    BarGroup {\n        id: leftCenterGroup\n        Resources {}\n        // quickshell-quotas-widget:start\n        Quotas {\n            visible: true\n            Layout.fillWidth: false\n        }\n        // quickshell-quotas-widget:end\n        Media {}\n    }\n}' >"$bar_file"
+    cp "$bar_file" "$before"
+
+    integrate_bar_content || return 1
+    cmp -s "$before" "$bar_file" || fail 'valid managed block must remain byte-for-byte unchanged'
 }
 
 assert_bar_integration_failure() {
@@ -1032,6 +1084,65 @@ Quotas {}
 // quickshell-quotas-widget:end
 EOF
     assert_bar_integration_failure 'managed markers'
+}
+
+test_rejects_reversed_managed_markers() {
+    prepare_end4_fixture
+    local bar_file="$CONFIG_ROOT/modules/ii/bar/BarContent.qml"
+
+    cat >>"$bar_file" <<'EOF'
+// quickshell-quotas-widget:end
+Quotas {
+    visible: true
+    Layout.fillWidth: false
+}
+// quickshell-quotas-widget:start
+EOF
+    assert_bar_integration_failure 'managed block'
+}
+
+test_rejects_malformed_managed_block() {
+    prepare_end4_fixture
+    local bar_file="$CONFIG_ROOT/modules/ii/bar/BarContent.qml"
+
+    cat >"$bar_file" <<'EOF'
+Item {
+    BarGroup {
+        id: leftCenterGroup
+        Resources {}
+        // quickshell-quotas-widget:start
+        Quotas {
+            visible: false
+            Layout.fillWidth: false
+        }
+        // quickshell-quotas-widget:end
+        Media {}
+    }
+}
+EOF
+    assert_bar_integration_failure 'managed block'
+}
+
+test_rejects_misplaced_managed_block() {
+    prepare_end4_fixture
+    local bar_file="$CONFIG_ROOT/modules/ii/bar/BarContent.qml"
+
+    cat >"$bar_file" <<'EOF'
+Item {
+    BarGroup {
+        id: leftCenterGroup
+        Resources {}
+        Media {}
+        // quickshell-quotas-widget:start
+        Quotas {
+            visible: true
+            Layout.fillWidth: false
+        }
+        // quickshell-quotas-widget:end
+    }
+}
+EOF
+    assert_bar_integration_failure 'managed block'
 }
 
 test_rejects_missing_safe_bar_insertion_point() {
@@ -1087,6 +1198,43 @@ test_installs_payload_with_expected_modes_and_backups() {
     assert_file_mode 700 "$INSTALL_DIR/get-quotas.sh" || return 1
     assert_file_exists "$INSTALL_DIR/Quotas.qml.backup.20260731-143000" || return 1
     [[ ! -e "$INSTALL_DIR/QuotasPopup.qml.backup.20260731-143000" ]] || fail 'identical payload must not receive a backup'
+}
+
+test_corrects_identical_payload_modes_transactionally() {
+    prepare_transaction_fixture
+    cp "$PAYLOAD_DIR/Quotas.qml" "$INSTALL_DIR/Quotas.qml"
+    cp "$PAYLOAD_DIR/get-quotas.sh" "$INSTALL_DIR/get-quotas.sh"
+    chmod 600 "$INSTALL_DIR/Quotas.qml"
+    chmod 644 "$INSTALL_DIR/get-quotas.sh"
+    touch -t 202001020304.05 "$INSTALL_DIR/get-quotas.sh"
+    local original_mtime
+    original_mtime="$(stat -c '%Y' "$INSTALL_DIR/get-quotas.sh")"
+
+    begin_transaction || return 1
+    install_payload || return 1
+    assert_file_mode 644 "$INSTALL_DIR/Quotas.qml" || return 1
+    assert_file_mode 700 "$INSTALL_DIR/get-quotas.sh" || return 1
+    assert_file_mode 600 "$INSTALL_DIR/Quotas.qml.backup.20260731-143000" || return 1
+    assert_file_mode 644 "$INSTALL_DIR/get-quotas.sh.backup.20260731-143000" || return 1
+    rollback_transaction || return 1
+    assert_file_mode 600 "$INSTALL_DIR/Quotas.qml" || return 1
+    assert_file_mode 644 "$INSTALL_DIR/get-quotas.sh" || return 1
+    assert_eq "$original_mtime" "$(stat -c '%Y' "$INSTALL_DIR/get-quotas.sh")"
+}
+
+test_corrects_identical_fallback_mode_transactionally() {
+    prepare_installer_fixture
+    QUOTAS_SECRET_TOOL_BIN="$TEST_TMP_ROOT/missing-secret-tool"
+    QUOTAS_TIMESTAMP='20260731-143000'
+    store_credentials >/dev/null 2>&1 || return 1
+    chmod 644 "$FALLBACK_CONFIG"
+
+    begin_transaction || return 1
+    store_credentials >/dev/null 2>&1 || return 1
+    assert_file_mode 600 "$FALLBACK_CONFIG" || return 1
+    assert_file_mode 644 "$FALLBACK_CONFIG.backup.20260731-143000" || return 1
+    rollback_transaction || return 1
+    assert_file_mode 644 "$FALLBACK_CONFIG"
 }
 
 test_rolls_back_payload_when_bar_integration_fails() {
@@ -1170,6 +1318,42 @@ test_signal_handler_rolls_back_and_exits_with_signal_status() {
     assert_eq '130' "$status" || return 1
     assert_eq 'old quotas qml' "$(<"$INSTALL_DIR/Quotas.qml")" || return 1
     [[ ! -e "$INSTALL_DIR/QuotasPopup.qml" ]] || fail 'signal rollback must remove created payload'
+}
+
+test_incomplete_rollback_remains_active_and_can_retry() {
+    prepare_transaction_fixture
+    printf 'old quotas qml\n' >"$INSTALL_DIR/Quotas.qml"
+    chmod 640 "$INSTALL_DIR/Quotas.qml"
+
+    begin_transaction || return 1
+    install_payload || return 1
+    rm -f "$INSTALL_DIR/Quotas.qml"
+    mkdir "$INSTALL_DIR/Quotas.qml"
+    if rollback_transaction; then
+        fail 'rollback must fail rather than replace an unexpected directory' || return 1
+    fi
+    assert_eq '1' "$TX_ACTIVE" || return 1
+    assert_file_exists "$INSTALL_DIR/Quotas.qml.backup.20260731-143000" || return 1
+    rmdir "$INSTALL_DIR/Quotas.qml"
+    rollback_transaction || return 1
+    assert_eq '0' "$TX_ACTIVE" || return 1
+    assert_eq 'old quotas qml' "$(<"$INSTALL_DIR/Quotas.qml")" || return 1
+    assert_file_mode 640 "$INSTALL_DIR/Quotas.qml"
+}
+
+test_signal_during_rollback_is_deferred() {
+    reset_installer_state
+    TX_ACTIVE=1
+    TX_ROLLING_BACK=1
+    local status
+
+    set +e
+    (handle_transaction_signal 130)
+    status=$?
+    set -e
+    assert_eq '0' "$status" || return 1
+    assert_eq '1' "$TX_ACTIVE" || return 1
+    assert_eq '1' "$TX_ROLLING_BACK"
 }
 
 assert_smoke_failure() {
@@ -1382,18 +1566,30 @@ run_test 'fallback warning is bilingual' test_fallback_warning_is_bilingual
 run_test 'inserts managed block after balanced Resources' test_inserts_managed_block_after_balanced_resources
 run_test 'preflight accepts braces in comments and strings' test_preflight_accepts_braces_in_comments_and_strings
 run_test 'inserts after one-line Resources component' test_inserts_after_one_line_resources_component
+run_test 'inserts inside fully inline leftCenterGroup' test_inserts_inside_fully_inline_left_center_group
+run_test 'rejects multiple inline Resources in target group' test_rejects_multiple_inline_resources_in_target_group
+run_test 'rejects multiple inline target groups' test_rejects_multiple_inline_target_groups
+run_test 'preserves unterminated final line' test_preserves_unterminated_final_line
 run_test 'bar integration is idempotent' test_bar_integration_is_idempotent
+run_test 'valid managed block preserves all existing bytes' test_valid_managed_block_preserves_all_existing_bytes
 run_test 'rejects unbalanced managed markers' test_rejects_unbalanced_managed_markers
 run_test 'rejects duplicate managed blocks' test_rejects_duplicate_managed_blocks
+run_test 'rejects reversed managed markers' test_rejects_reversed_managed_markers
+run_test 'rejects malformed managed block' test_rejects_malformed_managed_block
+run_test 'rejects misplaced managed block' test_rejects_misplaced_managed_block
 run_test 'rejects missing safe bar insertion point' test_rejects_missing_safe_bar_insertion_point
 run_test 'rejects multiple safe bar insertion points' test_rejects_multiple_safe_bar_insertion_points
 run_test 'reports unsafe insertion under errexit' test_reports_unsafe_insertion_under_errexit
 run_test 'installs payload with modes and backups' test_installs_payload_with_expected_modes_and_backups
+run_test 'corrects identical payload modes transactionally' test_corrects_identical_payload_modes_transactionally
+run_test 'corrects identical fallback mode transactionally' test_corrects_identical_fallback_mode_transactionally
 run_test 'rolls back payload when bar integration fails' test_rolls_back_payload_when_bar_integration_fails
 run_test 'rejects payload symlink destination' test_rejects_payload_symlink_destination
 run_test 'smoke failure rolls back payload bar and fallback' test_smoke_failure_rolls_back_payload_bar_and_fallback
 run_test 'rollback keeps keyring mock data' test_rollback_keeps_keyring_mock_data
 run_test 'signal handler rolls back and exits with signal status' test_signal_handler_rolls_back_and_exits_with_signal_status
+run_test 'incomplete rollback remains active and can retry' test_incomplete_rollback_remains_active_and_can_retry
+run_test 'signal during rollback is deferred' test_signal_during_rollback_is_deferred
 run_test 'smoke rejects nonzero fetcher exit' test_smoke_rejects_nonzero_fetcher_exit
 run_test 'smoke rejects invalid JSON' test_smoke_rejects_invalid_json
 run_test 'smoke rejects missing quotas' test_smoke_rejects_missing_quotas

@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import qs.modules.common
+import qs.modules.common.functions
 import qs.modules.common.widgets
 import qs.services
 import Quickshell
@@ -20,36 +21,44 @@ MouseArea {
     property var quotasData: null
     property real avgRemaining: 1.0
     property bool isFetching: false
+    readonly property string quotaScriptPath: FileUtils.trimFileProtocol(`${Qt.resolvedUrl("get-quotas.sh")}`)
+    property string pendingStdout: ""
+    property string pendingStderr: ""
 
     Process {
         id: fetchQuotasProcess
-        command: [
-            "bash", "-c",
-            "API_URL=$(secret-tool lookup application quotas key quotasApiUrl) MANAGEMENT_KEY=$(secret-tool lookup application quotas key quotasManagementKey) ~/.bun/bin/bun run /home/ngukovskiy/.config/quickshell/ii/modules/ii/bar/get-quotas.ts"
-        ]
+        command: [root.quotaScriptPath]
         stdout: StdioCollector {
             onStreamFinished: {
-                try {
-                    if (text.trim().length > 0) {
-                        let parsed = JSON.parse(text);
-                        root.quotasData = parsed;
-                        root.avgRemaining = parsed.avgRemaining ?? 1.0;
-                    }
-                } catch (e) {
-                    console.error("Failed to parse quotas JSON:\n", text);
-                }
-                root.isFetching = false;
+                root.pendingStdout = text;
             }
         }
         stderr: StdioCollector {
             onStreamFinished: {
-                if (text.trim().length > 0) {
-                    console.log("Quotas Widget Stderr:", text);
-                }
+                root.pendingStderr = text;
             }
         }
-        onExited: {
-            root.isFetching = false;
+        onExited: function(exitCode, exitStatus) {
+            try {
+                if (exitCode === 0) {
+                    const parsed = JSON.parse(root.pendingStdout);
+                    root.quotasData = parsed;
+                    root.avgRemaining = parsed.avgRemaining ?? 1.0;
+                } else {
+                    const diagnostic = root.pendingStderr.trim();
+                    if (diagnostic.length > 0) {
+                        console.error("Quota fetch failed:", diagnostic);
+                    } else {
+                        console.error("Quota fetch failed with exit code", exitCode);
+                    }
+                }
+            } catch (e) {
+                console.error("Failed to parse quotas JSON:\n", root.pendingStdout, e);
+            } finally {
+                root.pendingStdout = "";
+                root.pendingStderr = "";
+                root.isFetching = false;
+            }
         }
     }
 
@@ -58,11 +67,15 @@ MouseArea {
             if (!root.isFetching) {
                 root.isFetching = true;
                 fetchQuotasProcess.running = true;
-                Quickshell.execDetached(["notify-send",
-                    Translation.tr("Quotas"),
-                    Translation.tr("Refreshing quotas...")
-                    , "-a", "Shell"
-                ]);
+                try {
+                    Quickshell.execDetached(["notify-send",
+                        Translation.tr("Quotas"),
+                        Translation.tr("Refreshing quotas...")
+                        , "-a", "Shell"
+                    ]);
+                } catch (e) {
+                    console.error("Failed to launch quota refresh notification:", e);
+                }
             }
             mouse.accepted = false
         }

@@ -13,6 +13,11 @@ ARCHIVE_PATH=""
 PAYLOAD_DIR=""
 FALLBACK_CONFIG=""
 CREDENTIAL_BACKEND=""
+declare -a TX_REPLACED_PATHS=()
+declare -a TX_BACKUP_PATHS=()
+declare -a TX_CREATED_PATHS=()
+TX_ACTIVE=0
+TX_TIMESTAMP=""
 
 usage() {
     cat <<'EOF'
@@ -256,6 +261,108 @@ cleanup_work_dir() {
     [[ -z "$WORK_DIR" ]] || rm -rf -- "$WORK_DIR"
 }
 
+begin_transaction() {
+    TX_REPLACED_PATHS=()
+    TX_BACKUP_PATHS=()
+    TX_CREATED_PATHS=()
+    TX_TIMESTAMP="${QUOTAS_TIMESTAMP:-$(date +%Y%m%d-%H%M%S)}"
+    TX_ACTIVE=1
+}
+
+backup_changed_file() {
+    local path="$1" backup index
+
+    ((TX_ACTIVE == 1)) || {
+        die 'cannot backup a file outside an active transaction' || return 1
+    }
+    [[ -e "$path" && ! -L "$path" ]] || {
+        die "cannot backup missing or unsafe file: $path" || return 1
+    }
+    for ((index = 0; index < ${#TX_REPLACED_PATHS[@]}; index++)); do
+        [[ "${TX_REPLACED_PATHS[index]}" != "$path" ]] || return 0
+    done
+
+    backup="$path.backup.$TX_TIMESTAMP"
+    [[ ! -e "$backup" ]] || {
+        die "backup already exists: $backup" || return 1
+    }
+    cp -p -- "$path" "$backup" || {
+        die "cannot backup file: $path" || return 1
+    }
+    TX_REPLACED_PATHS+=("$path")
+    TX_BACKUP_PATHS+=("$backup")
+}
+
+track_created_file() {
+    local path="$1" tracked
+
+    ((TX_ACTIVE == 1)) || {
+        die 'cannot track a file outside an active transaction' || return 1
+    }
+    for tracked in "${TX_CREATED_PATHS[@]}"; do
+        [[ "$tracked" != "$path" ]] || return 0
+    done
+    TX_CREATED_PATHS+=("$path")
+}
+
+rollback_transaction() {
+    local index status=0
+
+    ((TX_ACTIVE == 1)) || return 0
+    TX_ACTIVE=0
+    for ((index = ${#TX_REPLACED_PATHS[@]} - 1; index >= 0; index--)); do
+        cp -p -- "${TX_BACKUP_PATHS[index]}" "${TX_REPLACED_PATHS[index]}" || status=1
+    done
+    for ((index = ${#TX_CREATED_PATHS[@]} - 1; index >= 0; index--)); do
+        rm -f -- "${TX_CREATED_PATHS[index]}" || status=1
+    done
+    ((status == 0)) || {
+        warn 'installation rollback was incomplete; timestamped backups were preserved'
+        return 1
+    }
+}
+
+commit_transaction() {
+    TX_ACTIVE=0
+    TX_REPLACED_PATHS=()
+    TX_BACKUP_PATHS=()
+    TX_CREATED_PATHS=()
+}
+
+_install_file() {
+    local source="$1" destination="$2" mode="$3" tmp_file
+
+    [[ -f "$source" && ! -L "$source" ]] || {
+        die "missing safe payload file: $source" || return 1
+    }
+    if [[ -e "$destination" ]]; then
+        [[ -f "$destination" && ! -L "$destination" ]] || {
+            die "unsafe installation destination: $destination" || return 1
+        }
+        cmp -s -- "$source" "$destination" && return 0
+        ((TX_ACTIVE == 0)) || backup_changed_file "$destination" || return 1
+    else
+        ((TX_ACTIVE == 0)) || track_created_file "$destination" || return 1
+    fi
+
+    tmp_file="$(mktemp "$destination.tmp.XXXXXX")" || {
+        die "cannot create temporary installation file for: $destination" || return 1
+    }
+    cp -- "$source" "$tmp_file" && chmod "$mode" "$tmp_file" && mv -f -- "$tmp_file" "$destination" || {
+        rm -f -- "$tmp_file"
+        die "cannot install file: $destination" || return 1
+    }
+}
+
+install_payload() {
+    mkdir -p -- "$INSTALL_DIR" || {
+        die 'cannot create widget installation directory' || return 1
+    }
+    _install_file "$PAYLOAD_DIR/Quotas.qml" "$INSTALL_DIR/Quotas.qml" 644 || return 1
+    _install_file "$PAYLOAD_DIR/QuotasPopup.qml" "$INSTALL_DIR/QuotasPopup.qml" 644 || return 1
+    _install_file "$PAYLOAD_DIR/get-quotas.sh" "$INSTALL_DIR/get-quotas.sh" 700
+}
+
 fetch_latest_release() {
     local github_api="${QUOTAS_GITHUB_API_BASE:-https://api.github.com}"
     local metadata_file asset_count download_url
@@ -417,6 +524,25 @@ write_fallback_config() {
         rm -f -- "$tmp_config"
         die 'cannot secure credential fallback configuration' || return 1
     }
+    if [[ -e "$FALLBACK_CONFIG" ]]; then
+        [[ -f "$FALLBACK_CONFIG" && ! -L "$FALLBACK_CONFIG" ]] || {
+            rm -f -- "$tmp_config"
+            die 'credential fallback destination is unsafe' || return 1
+        }
+        if cmp -s -- "$tmp_config" "$FALLBACK_CONFIG"; then
+            rm -f -- "$tmp_config"
+            return 0
+        fi
+        ((TX_ACTIVE == 0)) || backup_changed_file "$FALLBACK_CONFIG" || {
+            rm -f -- "$tmp_config"
+            return 1
+        }
+    else
+        ((TX_ACTIVE == 0)) || track_created_file "$FALLBACK_CONFIG" || {
+            rm -f -- "$tmp_config"
+            return 1
+        }
+    fi
     mv -f -- "$tmp_config" "$FALLBACK_CONFIG" || {
         rm -f -- "$tmp_config"
         die 'cannot install credential fallback configuration' || return 1
@@ -430,6 +556,12 @@ store_credentials() {
     CREDENTIAL_BACKEND=""
 
     if store_keyring_credentials; then
+        if [[ -e "$FALLBACK_CONFIG" ]]; then
+            [[ -f "$FALLBACK_CONFIG" && ! -L "$FALLBACK_CONFIG" ]] || {
+                die 'credential fallback destination is unsafe' || return 1
+            }
+            ((TX_ACTIVE == 0)) || backup_changed_file "$FALLBACK_CONFIG" || return 1
+        fi
         rm -f -- "$FALLBACK_CONFIG" || {
             die 'cannot remove obsolete credential fallback configuration' || return 1
         }
@@ -528,7 +660,8 @@ require_dependencies() {
 }
 
 _qml_braced_block() {
-    local content="$1" start_token="$2" after open_offset index depth=0 char
+    local content="$1" start_token="$2" after open_offset index depth=0 char next_char
+    local quote='' escaped=0 line_comment=0
 
     [[ "$content" == *"$start_token"* ]] || return 1
     after="${content#*"$start_token"}"
@@ -538,6 +671,29 @@ _qml_braced_block() {
 
     for ((index = 0; index < ${#after}; index++)); do
         char="${after:index:1}"
+        next_char="${after:index+1:1}"
+        if ((line_comment == 1)); then
+            [[ "$char" != $'\n' ]] || line_comment=0
+            continue
+        fi
+        if [[ -n "$quote" ]]; then
+            if ((escaped == 1)); then
+                escaped=0
+            elif [[ "$char" == '\\' ]]; then
+                escaped=1
+            elif [[ "$char" == "$quote" ]]; then
+                quote=''
+            fi
+            continue
+        fi
+        if [[ "$char" == '/' && "$next_char" == '/' ]]; then
+            line_comment=1
+            continue
+        fi
+        if [[ "$char" == '"' || "$char" == "'" ]]; then
+            quote="$char"
+            continue
+        fi
         case "$char" in
             '{') depth=$((depth + 1)) ;;
             '}')
@@ -604,21 +760,262 @@ validate_end4_layout() {
     }
 }
 
+integrate_bar_content() {
+    local bar_file="$CONFIG_ROOT/modules/ii/bar/BarContent.qml"
+    local transformed
+    local start_count end_count awk_status
+
+    if [[ -z "$WORK_DIR" ]]; then
+        WORK_DIR="$(mktemp -d)" || {
+            die 'cannot create temporary installer directory' || return 1
+        }
+    else
+        mkdir -p -- "$WORK_DIR" || {
+            die 'cannot create temporary installer directory' || return 1
+        }
+    fi
+    chmod 700 "$WORK_DIR" || {
+        die 'cannot secure temporary installer directory' || return 1
+    }
+    transformed="$WORK_DIR/BarContent.qml.transformed"
+
+    start_count="$(grep -c '^[[:space:]]*// quickshell-quotas-widget:start[[:space:]]*$' "$bar_file" || true)"
+    end_count="$(grep -c '^[[:space:]]*// quickshell-quotas-widget:end[[:space:]]*$' "$bar_file" || true)"
+    if [[ "$start_count" == '1' && "$end_count" == '1' ]]; then
+        return 0
+    fi
+    [[ "$start_count" == '0' && "$end_count" == '0' ]] || {
+        die 'BarContent.qml has invalid managed markers' || return 1
+    }
+
+    if awk '
+        function sanitize(line,    out, i, c, nextc, quote, escaped) {
+            out = ""
+            quote = ""
+            escaped = 0
+            for (i = 1; i <= length(line); i++) {
+                c = substr(line, i, 1)
+                nextc = substr(line, i + 1, 1)
+                if (quote != "") {
+                    if (escaped) {
+                        escaped = 0
+                    } else if (c == "\\") {
+                        escaped = 1
+                    } else if (c == quote) {
+                        quote = ""
+                    }
+                    out = out " "
+                } else if (c == "\"" || c == sprintf("%c", 39)) {
+                    quote = c
+                    out = out " "
+                } else if (c == "/" && nextc == "/") {
+                    break
+                } else {
+                    out = out c
+                }
+            }
+            return out
+        }
+        function braces(line,    clean, i, c, delta) {
+            clean = sanitize(line)
+            delta = 0
+            for (i = 1; i <= length(clean); i++) {
+                c = substr(clean, i, 1)
+                if (c == "{") delta++
+                else if (c == "}") delta--
+            }
+            return delta
+        }
+        function opens_component(line, name,    clean) {
+            clean = sanitize(line)
+            return clean ~ ("(^|[^[:alnum:]_])" name "[[:space:]]*\\{")
+        }
+        {
+            lines[NR] = $0
+            delta[NR] = braces($0)
+        }
+        END {
+            group_count = 0
+            for (i = 1; i <= NR; i++) {
+                if (!opens_component(lines[i], "BarGroup")) continue
+                depth = 0
+                opened = 1
+                close_line = 0
+                has_id = 0
+                for (j = i; j <= NR; j++) {
+                    if (sanitize(lines[j]) ~ /(^|[[:space:];{])id[[:space:]]*:[[:space:]]*leftCenterGroup([^[:alnum:]_]|$)/) has_id = 1
+                    depth += delta[j]
+                    if (opened && depth == 0) {
+                        close_line = j
+                        break
+                    }
+                    if (opened && depth < 0) break
+                }
+                if (close_line && has_id) {
+                    group_count++
+                    group_start[group_count] = i
+                    group_end[group_count] = close_line
+                }
+            }
+            if (group_count != 1) exit 41
+
+            resources_count = 0
+            for (i = group_start[1]; i <= group_end[1]; i++) {
+                if (!opens_component(lines[i], "Resources")) continue
+                depth = 0
+                opened = 1
+                close_line = 0
+                for (j = i; j <= group_end[1]; j++) {
+                    depth += delta[j]
+                    if (opened && depth == 0) {
+                        close_line = j
+                        break
+                    }
+                    if (opened && depth < 0) break
+                }
+                if (close_line) {
+                    resources_count++
+                    resource_line = i
+                    resource_end = close_line
+                }
+            }
+            if (resources_count != 1) exit 42
+
+            match(lines[resource_line], /^[[:space:]]*/)
+            indent = substr(lines[resource_line], RSTART, RLENGTH)
+            for (i = 1; i <= NR; i++) {
+                print lines[i]
+                if (i == resource_end) {
+                    print indent "// quickshell-quotas-widget:start"
+                    print indent "Quotas {"
+                    print indent "    visible: true"
+                    print indent "    Layout.fillWidth: false"
+                    print indent "}"
+                    print indent "// quickshell-quotas-widget:end"
+                }
+            }
+        }
+    ' "$bar_file" >"$transformed"; then
+        awk_status=0
+    else
+        awk_status=$?
+    fi
+    case $awk_status in
+        0) ;;
+        41|42)
+            rm -f -- "$transformed"
+            die 'BarContent.qml must contain exactly one safe insertion point' || return 1
+            ;;
+        *)
+            rm -f -- "$transformed"
+            die 'cannot transform BarContent.qml safely' || return 1
+            ;;
+    esac
+
+    start_count="$(grep -c '^[[:space:]]*// quickshell-quotas-widget:start[[:space:]]*$' "$transformed" || true)"
+    end_count="$(grep -c '^[[:space:]]*// quickshell-quotas-widget:end[[:space:]]*$' "$transformed" || true)"
+    [[ "$start_count" == '1' && "$end_count" == '1' ]] || {
+        rm -f -- "$transformed"
+        die 'BarContent.qml transformation produced invalid managed markers' || return 1
+    }
+    _install_file "$transformed" "$bar_file" 644
+}
+
+run_smoke_test() {
+    local smoke_stdout="$WORK_DIR/smoke.stdout" smoke_stderr="$WORK_DIR/smoke.stderr"
+    local fetcher="$INSTALL_DIR/get-quotas.sh" status
+
+    if "$fetcher" >"$smoke_stdout" 2>"$smoke_stderr"; then
+        status=0
+    else
+        status=$?
+    fi
+    ((status == 0)) || {
+        die "installed fetcher smoke test failed (exit $status); see $smoke_stderr" || return 1
+    }
+    jq -e '
+        (.quotas | type == "array") and
+        (.minRemaining | type == "number") and
+        (.avgRemaining | type == "number") and
+        (.lastUpdated | type == "string")
+    ' "$smoke_stdout" >/dev/null 2>&1 || {
+        die 'installed fetcher smoke test returned invalid quota JSON' || return 1
+    }
+}
+
+restart_quickshell() {
+    local qs_bin="${QUOTAS_QS_BIN:-$QS_BIN}" instances
+
+    [[ "${QUOTAS_SKIP_RESTART:-0}" != '1' ]] || return 0
+    if ! instances="$($qs_bin -p "$CONFIG_ROOT" list --json 2>/dev/null)"; then
+        warn 'cannot inspect Quickshell instances; restart was skipped'
+        return 0
+    fi
+    if ! jq -e 'type == "array" and length > 0' <<<"$instances" >/dev/null 2>&1; then
+        warn 'Quickshell is not running for this configuration; start it manually if needed'
+        return 0
+    fi
+    if ! "$qs_bin" -p "$CONFIG_ROOT" kill >/dev/null 2>&1; then
+        warn 'cannot stop Quickshell; the committed installation was kept'
+        return 0
+    fi
+    if ! "$qs_bin" -p "$CONFIG_ROOT" --daemonize >/dev/null 2>&1; then
+        warn 'cannot start Quickshell; the committed installation was kept'
+    fi
+}
+
+handle_transaction_failure() {
+    local status=$?
+
+    ((TX_ACTIVE == 0)) || rollback_transaction || true
+    return "$status"
+}
+
+handle_transaction_signal() {
+    local status="$1"
+
+    ((TX_ACTIVE == 0)) || rollback_transaction || true
+    exit "$status"
+}
+
 main() {
     require_bash_version "${BASH_VERSINFO[0]}" || return 1
     parse_args "$@" || return 1
     ((HELP_REQUESTED == 0)) || return 0
+    read_management_key || return 1
     resolve_layout || return 1
     require_dependencies || return 1
     validate_end4_layout || return 1
-    read_management_key || return 1
     validate_api || return 1
-    store_credentials || return 1
     fetch_latest_release || return 1
     validate_archive || return 1
+    begin_transaction || return 1
+    store_credentials || {
+        rollback_transaction || true
+        return 1
+    }
+    install_payload || {
+        rollback_transaction || true
+        return 1
+    }
+    integrate_bar_content || {
+        rollback_transaction || true
+        return 1
+    }
+    run_smoke_test || {
+        rollback_transaction || true
+        return 1
+    }
+    commit_transaction || return 1
+    restart_quickshell
+    printf 'Quotas widget installed in %s using %s credential storage.\n' \
+        "$INSTALL_DIR" "$CREDENTIAL_BACKEND"
 }
 
 if [[ "${QUOTAS_INSTALLER_SOURCE_ONLY:-0}" != "1" ]]; then
     trap cleanup_work_dir EXIT
+    trap handle_transaction_failure ERR
+    trap 'handle_transaction_signal 130' INT
+    trap 'handle_transaction_signal 143' TERM
     main "$@"
 fi

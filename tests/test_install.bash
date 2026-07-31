@@ -20,6 +20,12 @@ reset_installer_state() {
     PAYLOAD_DIR=""
     FALLBACK_CONFIG=""
     CREDENTIAL_BACKEND=""
+    TX_ACTIVE=0
+    TX_TIMESTAMP=""
+    TX_REPLACED_PATHS=()
+    TX_BACKUP_PATHS=()
+    TX_CREATED_PATHS=()
+    unset QUOTAS_TIMESTAMP QUOTAS_SKIP_RESTART QUOTAS_QS_BIN
 }
 
 prepare_installer_fixture() {
@@ -106,7 +112,20 @@ create_release_archive() {
     mkdir -p "$TEST_TMP_ROOT/payload"
     printf 'qml\n' >"$TEST_TMP_ROOT/payload/Quotas.qml"
     printf 'qml\n' >"$TEST_TMP_ROOT/payload/QuotasPopup.qml"
-    printf '#!/usr/bin/env bash\nexit 0\n' >"$TEST_TMP_ROOT/payload/get-quotas.sh"
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'printf '\''%s\n'\'' '\''{"quotas":[],"minRemaining":1,"avgRemaining":2,"lastUpdated":"2026-07-31T14:30:00Z"}'\''' \
+        >"$TEST_TMP_ROOT/payload/get-quotas.sh"
+    tar -C "$TEST_TMP_ROOT/payload" -czf "$archive" \
+        Quotas.qml QuotasPopup.qml get-quotas.sh
+}
+
+create_release_archive_with_fetcher() {
+    local archive="$1" fetcher_body="$2"
+    mkdir -p "$TEST_TMP_ROOT/payload"
+    printf 'new quotas qml\n' >"$TEST_TMP_ROOT/payload/Quotas.qml"
+    printf 'new popup qml\n' >"$TEST_TMP_ROOT/payload/QuotasPopup.qml"
+    printf '#!/usr/bin/env bash\n%s\n' "$fetcher_body" >"$TEST_TMP_ROOT/payload/get-quotas.sh"
     tar -C "$TEST_TMP_ROOT/payload" -czf "$archive" \
         Quotas.qml QuotasPopup.qml get-quotas.sh
 }
@@ -123,6 +142,82 @@ prepare_end4_fixture() {
     mkdir -p "$CONFIG_ROOT/modules/ii/bar"
     cp "$fixture/shell.qml" "$CONFIG_ROOT/shell.qml"
     cp "$fixture/modules/ii/bar/BarContent.qml" "$CONFIG_ROOT/modules/ii/bar/BarContent.qml"
+}
+
+prepare_transaction_fixture() {
+    prepare_end4_fixture
+    INSTALL_DIR="$CONFIG_ROOT/modules/ii/bar"
+    WORK_DIR="$TEST_TMP_ROOT/work"
+    PAYLOAD_DIR="$TEST_TMP_ROOT/payload"
+    QUOTAS_TIMESTAMP='20260731-143000'
+    mkdir -p "$WORK_DIR" "$PAYLOAD_DIR"
+    printf 'new quotas qml\n' >"$PAYLOAD_DIR/Quotas.qml"
+    printf 'new popup qml\n' >"$PAYLOAD_DIR/QuotasPopup.qml"
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'printf '\''%s\n'\'' '\''{"quotas":[],"minRemaining":1,"avgRemaining":2,"lastUpdated":"2026-07-31T14:30:00Z"}'\''' \
+        >"$PAYLOAD_DIR/get-quotas.sh"
+}
+
+prepare_main_fixture() {
+    local release_archive="$1" fixture="$repo_root/tests/fixtures/end4-dots/ii"
+
+    prepare_remote_fixture
+    CONFIG_ROOT="$TEST_TMP_ROOT/config"
+    INSTALL_DIR="$CONFIG_ROOT/modules/ii/bar"
+    MOCK_SECRET_STORE_DIR="$TEST_TMP_ROOT/secrets"
+    QUOTAS_SECRET_TOOL_BIN="$repo_root/tests/helpers/mock_secret_tool.sh"
+    QUOTAS_SKIP_RESTART=1
+    QUOTAS_TIMESTAMP='20260731-143000'
+    export QUOTAS_SECRET_TOOL_BIN MOCK_SECRET_STORE_DIR QUOTAS_SKIP_RESTART QUOTAS_TIMESTAMP
+    mkdir -p "$INSTALL_DIR" "$MOCK_SECRET_STORE_DIR"
+    cp "$fixture/shell.qml" "$CONFIG_ROOT/shell.qml"
+    cp "$fixture/modules/ii/bar/BarContent.qml" "$INSTALL_DIR/BarContent.qml"
+    prepare_required_commands
+    rm "$TEST_TMP_ROOT/bin/curl" "$TEST_TMP_ROOT/bin/jq" "$TEST_TMP_ROOT/bin/tar"
+    queue_http_text 200 '{"files":[]}'
+    queue_latest_release '[{"name":"quickshell-quotas-widget-v1.0.0.tar.gz","browser_download_url":"https://download.example/release.tar.gz"}]'
+    queue_http_file 200 "$release_archive"
+}
+
+write_smoke_fetcher() {
+    local stdout="$1" exit_code="$2"
+
+    mkdir -p "$INSTALL_DIR" "$WORK_DIR"
+    {
+        printf '%s\n' '#!/usr/bin/env bash'
+        printf 'printf %%s %q\n' "$stdout"
+        printf '%s\n' "printf 'fetcher diagnostic' >&2" "exit $exit_code"
+    } >"$INSTALL_DIR/get-quotas.sh"
+    chmod 700 "$INSTALL_DIR/get-quotas.sh"
+}
+
+make_qs_mock() {
+    local mock="$TEST_TMP_ROOT/mock-qs"
+
+    cat >"$mock" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$MOCK_QS_LOG"
+case "$3" in
+    list)
+        printf '%s\n' "${MOCK_QS_LIST_JSON:-[]}"
+        exit "${MOCK_QS_LIST_EXIT:-0}"
+        ;;
+    kill)
+        exit "${MOCK_QS_KILL_EXIT:-0}"
+        ;;
+    --daemonize)
+        exit "${MOCK_QS_DAEMON_EXIT:-0}"
+        ;;
+esac
+exit 64
+EOF
+    chmod +x "$mock"
+    QUOTAS_QS_BIN="$mock"
+    MOCK_QS_LOG="$TEST_TMP_ROOT/qs.log"
+    : >"$MOCK_QS_LOG"
+    export QUOTAS_QS_BIN MOCK_QS_LOG MOCK_QS_LIST_JSON MOCK_QS_LIST_EXIT
+    export MOCK_QS_KILL_EXIT MOCK_QS_DAEMON_EXIT
 }
 
 make_command() {
@@ -815,10 +910,354 @@ test_fallback_warning_is_bilingual() {
     assert_contains "$output" "$russian_storage"
 }
 
-test_main_stores_credentials_after_api_validation() {
+test_inserts_managed_block_after_balanced_resources() {
+    prepare_end4_fixture
+    local bar_file="$CONFIG_ROOT/modules/ii/bar/BarContent.qml"
+    local expected="$TEST_TMP_ROOT/expected.qml"
+
+    cat >"$bar_file" <<'EOF'
+import QtQuick
+
+Item {
+    Resources { objectName: "outside" }
+    BarGroup {
+        id: leftCenterGroup
+        Resources {
+            property var nested: ({ value: { enabled: true } }) // } ignored
+            property string literal: "{not a brace} // not a comment"
+        }
+        Media {}
+    }
+}
+EOF
+    cat >"$expected" <<'EOF'
+import QtQuick
+
+Item {
+    Resources { objectName: "outside" }
+    BarGroup {
+        id: leftCenterGroup
+        Resources {
+            property var nested: ({ value: { enabled: true } }) // } ignored
+            property string literal: "{not a brace} // not a comment"
+        }
+        // quickshell-quotas-widget:start
+        Quotas {
+            visible: true
+            Layout.fillWidth: false
+        }
+        // quickshell-quotas-widget:end
+        Media {}
+    }
+}
+EOF
+
+    integrate_bar_content || return 1
+    cmp -s "$expected" "$bar_file" || fail 'managed block was not inserted at the balanced Resources boundary'
+}
+
+test_preflight_accepts_braces_in_comments_and_strings() {
+    prepare_end4_fixture
+    local bar_file="$CONFIG_ROOT/modules/ii/bar/BarContent.qml"
+
+    cat >"$bar_file" <<'EOF'
+Item {
+    BarGroup {
+        id: leftCenterGroup
+        Resources {
+            property var nested: ({ value: { enabled: true } }) // } ignored
+            property string literal: "} not a brace"
+        }
+        Media {}
+    }
+}
+EOF
+    validate_end4_layout
+}
+
+test_inserts_after_one_line_resources_component() {
+    prepare_end4_fixture
+    local bar_file="$CONFIG_ROOT/modules/ii/bar/BarContent.qml"
+
+    cat >"$bar_file" <<'EOF'
+Item {
+    BarGroup {
+        id: leftCenterGroup
+        Resources {}
+        Media {}
+    }
+}
+EOF
+    integrate_bar_content || return 1
+    assert_contains "$(<"$bar_file")" $'        Resources {}\n        // quickshell-quotas-widget:start'
+}
+
+test_bar_integration_is_idempotent() {
+    prepare_end4_fixture
+    local bar_file="$CONFIG_ROOT/modules/ii/bar/BarContent.qml"
+
+    integrate_bar_content || return 1
+    integrate_bar_content || return 1
+    assert_eq '1' "$(grep -c '^ *// quickshell-quotas-widget:start$' "$bar_file")" || return 1
+    assert_eq '1' "$(grep -c '^ *// quickshell-quotas-widget:end$' "$bar_file")"
+}
+
+assert_bar_integration_failure() {
+    local expected="$1" output status
+
+    set +e
+    output="$(integrate_bar_content 2>&1)"
+    status=$?
+    set -e
+    [[ $status -ne 0 ]] || fail 'unsafe BarContent.qml integration must fail' || return 1
+    assert_contains "$output" "$expected"
+}
+
+test_rejects_unbalanced_managed_markers() {
+    prepare_end4_fixture
+    printf '%s\n' '// quickshell-quotas-widget:start' >>"$CONFIG_ROOT/modules/ii/bar/BarContent.qml"
+    assert_bar_integration_failure 'managed markers'
+}
+
+test_rejects_duplicate_managed_blocks() {
+    prepare_end4_fixture
+    local bar_file="$CONFIG_ROOT/modules/ii/bar/BarContent.qml"
+
+    cat >>"$bar_file" <<'EOF'
+// quickshell-quotas-widget:start
+Quotas {}
+// quickshell-quotas-widget:end
+// quickshell-quotas-widget:start
+Quotas {}
+// quickshell-quotas-widget:end
+EOF
+    assert_bar_integration_failure 'managed markers'
+}
+
+test_rejects_missing_safe_bar_insertion_point() {
+    prepare_end4_fixture
+    printf 'Item { BarGroup { id: leftCenterGroup Media {} } }\n' \
+        >"$CONFIG_ROOT/modules/ii/bar/BarContent.qml"
+    assert_bar_integration_failure 'exactly one'
+}
+
+test_rejects_multiple_safe_bar_insertion_points() {
+    prepare_end4_fixture
+    local bar_file="$CONFIG_ROOT/modules/ii/bar/BarContent.qml"
+
+    cat >"$bar_file" <<'EOF'
+Item {
+    BarGroup { id: leftCenterGroup Resources {} Media {} }
+    BarGroup { id: leftCenterGroup Resources {} Media {} }
+}
+EOF
+    assert_bar_integration_failure 'exactly one'
+}
+
+test_reports_unsafe_insertion_under_errexit() {
+    prepare_end4_fixture
+    printf 'Item { BarGroup { id: leftCenterGroup Media {} } }\n' \
+        >"$CONFIG_ROOT/modules/ii/bar/BarContent.qml"
+    local output status
+
+    set +e
+    output="$(bash -c '
+        set -Eeuo pipefail
+        QUOTAS_INSTALLER_SOURCE_ONLY=1 source "$1"
+        CONFIG_ROOT="$2"
+        WORK_DIR="$3"
+        integrate_bar_content
+    ' _ "$repo_root/install.sh" "$CONFIG_ROOT" "$WORK_DIR" 2>&1)"
+    status=$?
+    set -e
+    [[ $status -ne 0 ]] || fail 'unsafe insertion must fail under errexit' || return 1
+    assert_contains "$output" 'exactly one'
+}
+
+test_installs_payload_with_expected_modes_and_backups() {
+    prepare_transaction_fixture
+    printf 'old quotas qml\n' >"$INSTALL_DIR/Quotas.qml"
+    printf 'new popup qml\n' >"$INSTALL_DIR/QuotasPopup.qml"
+    chmod 644 "$INSTALL_DIR/QuotasPopup.qml"
+
+    begin_transaction || return 1
+    install_payload || return 1
+    assert_file_mode 644 "$INSTALL_DIR/Quotas.qml" || return 1
+    assert_file_mode 644 "$INSTALL_DIR/QuotasPopup.qml" || return 1
+    assert_file_mode 700 "$INSTALL_DIR/get-quotas.sh" || return 1
+    assert_file_exists "$INSTALL_DIR/Quotas.qml.backup.20260731-143000" || return 1
+    [[ ! -e "$INSTALL_DIR/QuotasPopup.qml.backup.20260731-143000" ]] || fail 'identical payload must not receive a backup'
+}
+
+test_rolls_back_payload_when_bar_integration_fails() {
+    prepare_transaction_fixture
+    local bar_file="$CONFIG_ROOT/modules/ii/bar/BarContent.qml"
+    printf 'old quotas qml\n' >"$INSTALL_DIR/Quotas.qml"
+    printf 'Item { BarGroup { id: leftCenterGroup Media {} } }\n' >"$bar_file"
+
+    begin_transaction || return 1
+    install_payload || return 1
+    if integrate_bar_content; then
+        fail 'unsafe bar integration must fail' || return 1
+    fi
+    rollback_transaction || return 1
+    assert_eq 'old quotas qml' "$(<"$INSTALL_DIR/Quotas.qml")" || return 1
+    [[ ! -e "$INSTALL_DIR/QuotasPopup.qml" ]] || fail 'new popup must be removed by rollback' || return 1
+    [[ ! -e "$INSTALL_DIR/get-quotas.sh" ]] || fail 'new fetcher must be removed by rollback' || return 1
+    assert_file_exists "$INSTALL_DIR/Quotas.qml.backup.20260731-143000"
+}
+
+test_rejects_payload_symlink_destination() {
+    prepare_transaction_fixture
+    local outside="$TEST_TMP_ROOT/outside"
+    printf 'outside\n' >"$outside"
+    ln -s "$outside" "$INSTALL_DIR/Quotas.qml"
+
+    begin_transaction || return 1
+    if install_payload; then
+        fail 'payload installation must reject symlink destinations' || return 1
+    fi
+    assert_eq 'outside' "$(<"$outside")"
+}
+
+test_smoke_failure_rolls_back_payload_bar_and_fallback() {
+    prepare_transaction_fixture
+    local bar_file="$CONFIG_ROOT/modules/ii/bar/BarContent.qml"
+    local original_bar="$TEST_TMP_ROOT/original-bar.qml"
+    cp "$bar_file" "$original_bar"
+    printf 'old quotas qml\n' >"$INSTALL_DIR/Quotas.qml"
+    FALLBACK_CONFIG="$INSTALL_DIR/quotas-widget.conf"
+    printf '{"old":true}\n' >"$FALLBACK_CONFIG"
+
+    begin_transaction || return 1
+    backup_changed_file "$FALLBACK_CONFIG" || return 1
+    printf '{"new":true}\n' >"$FALLBACK_CONFIG"
+    install_payload || return 1
+    integrate_bar_content || return 1
+    printf '#!/usr/bin/env bash\nprintf '\''not-json\n'\''\n' >"$INSTALL_DIR/get-quotas.sh"
+    chmod 700 "$INSTALL_DIR/get-quotas.sh"
+    if run_smoke_test; then
+        fail 'invalid smoke JSON must fail' || return 1
+    fi
+    rollback_transaction || return 1
+    assert_eq 'old quotas qml' "$(<"$INSTALL_DIR/Quotas.qml")" || return 1
+    cmp -s "$original_bar" "$bar_file" || fail 'BarContent.qml must be restored' || return 1
+    assert_eq '{"old":true}' "$(<"$FALLBACK_CONFIG")" || return 1
+    assert_file_exists "$FALLBACK_CONFIG.backup.20260731-143000"
+}
+
+test_rollback_keeps_keyring_mock_data() {
+    prepare_installer_fixture
+    QUOTAS_TIMESTAMP='20260731-143000'
+    begin_transaction || return 1
+    store_credentials || return 1
+    rollback_transaction || return 1
+    assert_eq "$API_URL" "$(<"$MOCK_SECRET_STORE_DIR/quotasApiUrl")" || return 1
+    assert_eq "$MANAGEMENT_KEY" "$(<"$MOCK_SECRET_STORE_DIR/quotasManagementKey")"
+}
+
+test_signal_handler_rolls_back_and_exits_with_signal_status() {
+    prepare_transaction_fixture
+    printf 'old quotas qml\n' >"$INSTALL_DIR/Quotas.qml"
+    begin_transaction || return 1
+    install_payload || return 1
+    local status
+
+    set +e
+    (handle_transaction_signal 130)
+    status=$?
+    set -e
+    assert_eq '130' "$status" || return 1
+    assert_eq 'old quotas qml' "$(<"$INSTALL_DIR/Quotas.qml")" || return 1
+    [[ ! -e "$INSTALL_DIR/QuotasPopup.qml" ]] || fail 'signal rollback must remove created payload'
+}
+
+assert_smoke_failure() {
+    local stdout="$1" exit_code="${2:-0}" output status
+
+    prepare_transaction_fixture
+    write_smoke_fetcher "$stdout" "$exit_code"
+    set +e
+    output="$(run_smoke_test 2>&1)"
+    status=$?
+    set -e
+    [[ $status -ne 0 ]] || fail 'invalid installed fetcher result must fail' || return 1
+    assert_contains "$output" 'smoke test'
+}
+
+test_smoke_rejects_nonzero_fetcher_exit() {
+    assert_smoke_failure '{"quotas":[],"minRemaining":1,"avgRemaining":2,"lastUpdated":"now"}' 23
+}
+
+test_smoke_rejects_invalid_json() {
+    assert_smoke_failure 'not-json'
+}
+
+test_smoke_rejects_missing_quotas() {
+    assert_smoke_failure '{"minRemaining":1,"avgRemaining":2,"lastUpdated":"now"}'
+}
+
+test_smoke_rejects_non_array_quotas() {
+    assert_smoke_failure '{"quotas":{},"minRemaining":1,"avgRemaining":2,"lastUpdated":"now"}'
+}
+
+test_smoke_rejects_nonnumeric_minimum() {
+    assert_smoke_failure '{"quotas":[],"minRemaining":"1","avgRemaining":2,"lastUpdated":"now"}'
+}
+
+test_smoke_rejects_nonnumeric_average() {
+    assert_smoke_failure '{"quotas":[],"minRemaining":1,"avgRemaining":"2","lastUpdated":"now"}'
+}
+
+test_smoke_rejects_nonstring_timestamp() {
+    assert_smoke_failure '{"quotas":[],"minRemaining":1,"avgRemaining":2,"lastUpdated":3}'
+}
+
+test_restart_warns_when_no_process_is_running() {
+    prepare_end4_fixture
+    make_qs_mock
+    MOCK_QS_LIST_JSON='[]'
+    export MOCK_QS_LIST_JSON
+    local output
+
+    output="$(restart_quickshell 2>&1)" || return 1
+    assert_eq "-p $CONFIG_ROOT list --json" "$(<"$MOCK_QS_LOG")" || return 1
+    assert_contains "$output" 'not running'
+}
+
+test_restart_kills_and_daemonizes_running_process() {
+    prepare_end4_fixture
+    make_qs_mock
+    MOCK_QS_LIST_JSON='[{"name":"ii"}]'
+    export MOCK_QS_LIST_JSON
+
+    restart_quickshell || return 1
+    assert_eq "$CONFIG_ROOT list --json" "$(sed -n 's/^-p //p' "$MOCK_QS_LOG" | sed -n '1p')" || return 1
+    assert_contains "$(<"$MOCK_QS_LOG")" "-p $CONFIG_ROOT kill" || return 1
+    assert_contains "$(<"$MOCK_QS_LOG")" "-p $CONFIG_ROOT --daemonize"
+}
+
+test_restart_failure_after_commit_does_not_roll_back() {
+    prepare_transaction_fixture
+    make_qs_mock
+    MOCK_QS_LIST_JSON='[{"name":"ii"}]'
+    MOCK_QS_KILL_EXIT=9
+    export MOCK_QS_LIST_JSON MOCK_QS_KILL_EXIT
+    printf 'old quotas qml\n' >"$INSTALL_DIR/Quotas.qml"
+
+    begin_transaction || return 1
+    install_payload || return 1
+    integrate_bar_content || return 1
+    run_smoke_test || return 1
+    commit_transaction || return 1
+    restart_quickshell >/dev/null 2>&1 || fail 'restart failure must be warning only' || return 1
+    assert_eq 'new quotas qml' "$(<"$INSTALL_DIR/Quotas.qml")" || return 1
+    assert_eq '0' "$TX_ACTIVE"
+}
+
+test_main_rejects_release_before_storing_credentials() {
     prepare_remote_fixture
     local fixture="$repo_root/tests/fixtures/end4-dots/ii"
-    local release_archive="$TEST_TMP_ROOT/release.tar.gz"
     CONFIG_ROOT="$TEST_TMP_ROOT/config"
     INSTALL_DIR="$CONFIG_ROOT/modules/ii/bar"
     MOCK_SECRET_STORE_DIR="$TEST_TMP_ROOT/secrets"
@@ -829,15 +1268,48 @@ test_main_stores_credentials_after_api_validation() {
     cp "$fixture/modules/ii/bar/BarContent.qml" "$INSTALL_DIR/BarContent.qml"
     prepare_required_commands
     rm "$TEST_TMP_ROOT/bin/curl" "$TEST_TMP_ROOT/bin/jq" "$TEST_TMP_ROOT/bin/tar"
-    create_release_archive "$release_archive"
     queue_http_text 200 '{"files":[]}'
-    queue_latest_release '[{"name":"quickshell-quotas-widget-v1.0.0.tar.gz","browser_download_url":"https://download.example/release.tar.gz"}]'
-    queue_http_file 200 "$release_archive"
+    queue_latest_release '[]'
+
+    if PATH="$TEST_TMP_ROOT/bin:$PATH" run_with_mock_curl main \
+        --api-url "$API_URL" --management-key "$MANAGEMENT_KEY" --install-dir "$INSTALL_DIR"; then
+        fail 'main must reject an invalid release' || return 1
+    fi
+    [[ ! -e "$MOCK_SECRET_STORE_DIR/quotasApiUrl" ]] || fail 'credentials must not be stored before release validation' || return 1
+    [[ ! -e "$INSTALL_DIR/quotas-widget.conf" ]] || fail 'fallback must not be written before release validation'
+}
+
+test_main_rolls_back_when_smoke_test_fails() {
+    local release_archive="$TEST_TMP_ROOT/release.tar.gz"
+    create_release_archive_with_fetcher "$release_archive" "printf 'not-json\\n'"
+    prepare_main_fixture "$release_archive"
+    local bar_file="$INSTALL_DIR/BarContent.qml" original_bar="$TEST_TMP_ROOT/original-bar.qml"
+    cp "$bar_file" "$original_bar"
+    printf 'old quotas qml\n' >"$INSTALL_DIR/Quotas.qml"
+    printf '{"old":true}\n' >"$INSTALL_DIR/quotas-widget.conf"
+    QUOTAS_SECRET_TOOL_BIN="$TEST_TMP_ROOT/missing-secret-tool"
+    export QUOTAS_SECRET_TOOL_BIN
+
+    if PATH="$TEST_TMP_ROOT/bin:$PATH" run_with_mock_curl main \
+        --api-url "$API_URL" --management-key "$MANAGEMENT_KEY" --install-dir "$INSTALL_DIR"; then
+        fail 'main must fail when installed fetcher smoke test fails' || return 1
+    fi
+    assert_eq 'old quotas qml' "$(<"$INSTALL_DIR/Quotas.qml")" || return 1
+    cmp -s "$original_bar" "$bar_file" || fail 'main rollback must restore BarContent.qml' || return 1
+    assert_eq '{"old":true}' "$(<"$INSTALL_DIR/quotas-widget.conf")"
+}
+
+test_main_stores_credentials_after_api_validation() {
+    local release_archive="$TEST_TMP_ROOT/release.tar.gz"
+    create_release_archive "$release_archive"
+    prepare_main_fixture "$release_archive"
 
     PATH="$TEST_TMP_ROOT/bin:$PATH" run_with_mock_curl main \
         --api-url "$API_URL" --management-key "$MANAGEMENT_KEY" --install-dir "$INSTALL_DIR" || return 1
     assert_eq "$API_URL" "$(<"$MOCK_SECRET_STORE_DIR/quotasApiUrl")" || return 1
-    assert_eq "$MANAGEMENT_KEY" "$(<"$MOCK_SECRET_STORE_DIR/quotasManagementKey")"
+    assert_eq "$MANAGEMENT_KEY" "$(<"$MOCK_SECRET_STORE_DIR/quotasManagementKey")" || return 1
+    assert_file_exists "$INSTALL_DIR/Quotas.qml" || return 1
+    assert_contains "$(<"$INSTALL_DIR/BarContent.qml")" '// quickshell-quotas-widget:start'
 }
 
 run_test 'parses required API URL and management key' test_parse_required_api_url
@@ -907,6 +1379,33 @@ run_test 'preserves special characters in fallback JSON' test_preserves_special_
 run_test 'keeps credentials out of jq arguments' test_keeps_credentials_out_of_jq_argv
 run_test 'never logs management key while storing credentials' test_never_logs_management_key
 run_test 'fallback warning is bilingual' test_fallback_warning_is_bilingual
+run_test 'inserts managed block after balanced Resources' test_inserts_managed_block_after_balanced_resources
+run_test 'preflight accepts braces in comments and strings' test_preflight_accepts_braces_in_comments_and_strings
+run_test 'inserts after one-line Resources component' test_inserts_after_one_line_resources_component
+run_test 'bar integration is idempotent' test_bar_integration_is_idempotent
+run_test 'rejects unbalanced managed markers' test_rejects_unbalanced_managed_markers
+run_test 'rejects duplicate managed blocks' test_rejects_duplicate_managed_blocks
+run_test 'rejects missing safe bar insertion point' test_rejects_missing_safe_bar_insertion_point
+run_test 'rejects multiple safe bar insertion points' test_rejects_multiple_safe_bar_insertion_points
+run_test 'reports unsafe insertion under errexit' test_reports_unsafe_insertion_under_errexit
+run_test 'installs payload with modes and backups' test_installs_payload_with_expected_modes_and_backups
+run_test 'rolls back payload when bar integration fails' test_rolls_back_payload_when_bar_integration_fails
+run_test 'rejects payload symlink destination' test_rejects_payload_symlink_destination
+run_test 'smoke failure rolls back payload bar and fallback' test_smoke_failure_rolls_back_payload_bar_and_fallback
+run_test 'rollback keeps keyring mock data' test_rollback_keeps_keyring_mock_data
+run_test 'signal handler rolls back and exits with signal status' test_signal_handler_rolls_back_and_exits_with_signal_status
+run_test 'smoke rejects nonzero fetcher exit' test_smoke_rejects_nonzero_fetcher_exit
+run_test 'smoke rejects invalid JSON' test_smoke_rejects_invalid_json
+run_test 'smoke rejects missing quotas' test_smoke_rejects_missing_quotas
+run_test 'smoke rejects non-array quotas' test_smoke_rejects_non_array_quotas
+run_test 'smoke rejects nonnumeric minimum' test_smoke_rejects_nonnumeric_minimum
+run_test 'smoke rejects nonnumeric average' test_smoke_rejects_nonnumeric_average
+run_test 'smoke rejects nonstring timestamp' test_smoke_rejects_nonstring_timestamp
+run_test 'restart warns when no process is running' test_restart_warns_when_no_process_is_running
+run_test 'restart kills and daemonizes running process' test_restart_kills_and_daemonizes_running_process
+run_test 'restart failure after commit does not roll back' test_restart_failure_after_commit_does_not_roll_back
+run_test 'main rejects release before storing credentials' test_main_rejects_release_before_storing_credentials
+run_test 'main rolls back when smoke test fails' test_main_rolls_back_when_smoke_test_fails
 run_test 'main stores credentials after API validation' test_main_stores_credentials_after_api_validation
 
 finish_tests

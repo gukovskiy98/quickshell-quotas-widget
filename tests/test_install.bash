@@ -39,10 +39,10 @@ prepare_required_commands() {
 
 test_parse_required_api_url() {
     reset_installer_state
-    parse_args --api-url 'http://localhost:8080/' --management-key 'secret'
-    assert_eq 'http://localhost:8080' "$API_URL"
-    assert_eq 'secret' "$MANAGEMENT_KEY"
-    assert_eq 'argument' "$KEY_INPUT_MODE"
+    parse_args --api-url 'http://localhost:8080/' --management-key 'secret' || return 1
+    assert_eq 'http://localhost:8080' "$API_URL" || return 1
+    assert_eq 'secret' "$MANAGEMENT_KEY" || return 1
+    assert_eq 'argument' "$KEY_INPUT_MODE" || return 1
 }
 
 test_rejects_conflicting_key_modes() {
@@ -52,8 +52,8 @@ test_rejects_conflicting_key_modes() {
     output="$(parse_args --api-url http://localhost --management-key secret --management-key-stdin 2>&1)"
     status=$?
     set -e
-    [[ $status -ne 0 ]] || fail 'conflicting modes must fail'
-    assert_contains "$output" 'mutually exclusive'
+    [[ $status -ne 0 ]] || fail 'conflicting modes must fail' || return 1
+    assert_contains "$output" 'mutually exclusive' || return 1
 }
 
 test_rejects_unsupported_url_scheme() {
@@ -68,14 +68,14 @@ test_resolves_default_layout() {
     HOME="$TEST_TMP_ROOT/home"
     XDG_CONFIG_HOME="$TEST_TMP_ROOT/config"
     INSTALL_DIR=''
-    resolve_layout
-    assert_eq "$TEST_TMP_ROOT/config/quickshell/ii/modules/ii/bar" "$INSTALL_DIR"
-    assert_eq "$TEST_TMP_ROOT/config/quickshell/ii" "$CONFIG_ROOT"
+    resolve_layout || return 1
+    assert_eq "$TEST_TMP_ROOT/config/quickshell/ii/modules/ii/bar" "$INSTALL_DIR" || return 1
+    assert_eq "$TEST_TMP_ROOT/config/quickshell/ii" "$CONFIG_ROOT" || return 1
 }
 
 test_accepts_compatible_end4_layout() {
     prepare_end4_fixture
-    validate_end4_layout
+    validate_end4_layout || return 1
 }
 
 test_help_exits_zero() {
@@ -85,8 +85,8 @@ test_help_exits_zero() {
     output="$(parse_args --help 2>&1)"
     status=$?
     set -e
-    assert_eq '0' "$status"
-    assert_contains "$output" 'Usage:'
+    assert_eq '0' "$status" || return 1
+    assert_contains "$output" 'Usage:' || return 1
 }
 
 test_rejects_unknown_flag() {
@@ -96,8 +96,8 @@ test_rejects_unknown_flag() {
     output="$(parse_args --unknown 2>&1)"
     status=$?
     set -e
-    [[ $status -ne 0 ]] || fail 'unknown flag must fail'
-    assert_contains "$output" '--unknown'
+    [[ $status -ne 0 ]] || fail 'unknown flag must fail' || return 1
+    assert_contains "$output" '--unknown' || return 1
 }
 
 test_rejects_missing_flag_value() {
@@ -107,8 +107,8 @@ test_rejects_missing_flag_value() {
     output="$(parse_args --api-url 2>&1)"
     status=$?
     set -e
-    [[ $status -ne 0 ]] || fail 'missing flag value must fail'
-    assert_contains "$output" '--api-url'
+    [[ $status -ne 0 ]] || fail 'missing flag value must fail' || return 1
+    assert_contains "$output" '--api-url' || return 1
 }
 
 test_rejects_empty_key() {
@@ -118,27 +118,27 @@ test_rejects_empty_key() {
     output="$(parse_args --management-key '' 2>&1)"
     status=$?
     set -e
-    [[ $status -ne 0 ]] || fail 'empty key must fail'
-    assert_contains "$output" '--management-key'
+    [[ $status -ne 0 ]] || fail 'empty key must fail' || return 1
+    assert_contains "$output" '--management-key' || return 1
 }
 
 test_accepts_http_url() {
     reset_installer_state
-    assert_eq 'http://example.com/api' "$(normalize_api_url 'http://example.com/api///')"
+    assert_eq 'http://example.com/api' "$(normalize_api_url 'http://example.com/api///')" || return 1
 }
 
 test_accepts_https_url() {
     reset_installer_state
-    assert_eq 'https://example.com' "$(normalize_api_url 'https://example.com/')"
+    assert_eq 'https://example.com' "$(normalize_api_url 'https://example.com/')" || return 1
 }
 
 test_resolves_custom_install_dir() {
     reset_installer_state
     INSTALL_DIR="$TEST_TMP_ROOT/custom/modules/ii/bar"
     mkdir -p "$INSTALL_DIR"
-    resolve_layout
-    assert_eq "$TEST_TMP_ROOT/custom/modules/ii/bar" "$INSTALL_DIR"
-    assert_eq "$TEST_TMP_ROOT/custom" "$CONFIG_ROOT"
+    resolve_layout || return 1
+    assert_eq "$TEST_TMP_ROOT/custom/modules/ii/bar" "$INSTALL_DIR" || return 1
+    assert_eq "$TEST_TMP_ROOT/custom" "$CONFIG_ROOT" || return 1
 }
 
 test_rejects_bash_3() {
@@ -147,12 +147,12 @@ test_rejects_bash_3() {
     output="$(require_bash_version 3 2>&1)"
     status=$?
     set -e
-    [[ $status -ne 0 ]] || fail 'Bash 3 must fail'
-    assert_contains "$output" 'Bash 3'
+    [[ $status -ne 0 ]] || fail 'Bash 3 must fail' || return 1
+    assert_contains "$output" 'Bash 3' || return 1
 }
 
 test_accepts_bash_4() {
-    require_bash_version 4
+    require_bash_version 4 || return 1
 }
 
 test_rejects_missing_bar_content() {
@@ -163,8 +163,8 @@ test_rejects_missing_bar_content() {
     output="$(validate_end4_layout 2>&1)"
     status=$?
     set -e
-    [[ $status -ne 0 ]] || fail 'missing BarContent.qml must fail'
-    assert_contains "$output" 'BarContent.qml'
+    [[ $status -ne 0 ]] || fail 'missing BarContent.qml must fail' || return 1
+    assert_contains "$output" 'BarContent.qml' || return 1
 }
 
 test_rejects_missing_shell_qml() {
@@ -175,8 +175,8 @@ test_rejects_missing_shell_qml() {
     output="$(validate_end4_layout 2>&1)"
     status=$?
     set -e
-    [[ $status -ne 0 ]] || fail 'missing shell.qml must fail'
-    assert_contains "$output" 'shell.qml'
+    [[ $status -ne 0 ]] || fail 'missing shell.qml must fail' || return 1
+    assert_contains "$output" 'shell.qml' || return 1
 }
 
 test_rejects_missing_left_center_group() {
@@ -187,8 +187,8 @@ test_rejects_missing_left_center_group() {
     output="$(validate_end4_layout 2>&1)"
     status=$?
     set -e
-    [[ $status -ne 0 ]] || fail 'missing leftCenterGroup must fail'
-    assert_contains "$output" 'leftCenterGroup'
+    [[ $status -ne 0 ]] || fail 'missing leftCenterGroup must fail' || return 1
+    assert_contains "$output" 'leftCenterGroup' || return 1
 }
 
 test_rejects_missing_resources() {
@@ -199,8 +199,8 @@ test_rejects_missing_resources() {
     output="$(validate_end4_layout 2>&1)"
     status=$?
     set -e
-    [[ $status -ne 0 ]] || fail 'missing Resources must fail'
-    assert_contains "$output" 'Resources'
+    [[ $status -ne 0 ]] || fail 'missing Resources must fail' || return 1
+    assert_contains "$output" 'Resources' || return 1
 }
 
 assert_missing_dependency() {
@@ -213,8 +213,8 @@ assert_missing_dependency() {
     output="$(PATH="$TEST_TMP_ROOT/bin" require_dependencies 2>&1)"
     status=$?
     set -e
-    [[ $status -ne 0 ]] || fail "missing $missing must fail"
-    assert_contains "$output" "$missing"
+    [[ $status -ne 0 ]] || fail "missing $missing must fail" || return 1
+    assert_contains "$output" "$missing" || return 1
 }
 
 test_reports_missing_hyprctl() {
@@ -246,9 +246,9 @@ test_warns_when_notify_send_is_missing() {
     output="$(PATH="$TEST_TMP_ROOT/bin" require_dependencies 2>&1)"
     status=$?
     set -e
-    assert_eq '0' "$status"
-    assert_contains "$output" 'notify-send'
-    assert_contains "$output" 'refresh still works'
+    assert_eq '0' "$status" || return 1
+    assert_contains "$output" 'notify-send' || return 1
+    assert_contains "$output" 'refresh still works' || return 1
 }
 
 run_test 'parses required API URL and management key' test_parse_required_api_url

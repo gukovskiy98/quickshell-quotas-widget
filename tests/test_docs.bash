@@ -142,6 +142,17 @@ russian_section_headings() {
     done
 }
 
+round3_russian_contract_anchors() {
+    decode_utf8_hex '607461726020d0bdd183d0b6d0b5d0bd20d0b4d0bbd18f20d0bfd180d0bed0b2d0b5d180d0bad0b820d0b820d180d0b0d181d0bfd0b0d0bad0bed0b2d0bad0b820d180d0b5d0bbd0b8d0b7d0b020d0b2d0be20d0b2d180d0b5d0bcd18f20d183d181d182d0b0d0bdd0bed0b2d0bad0b83b20d183d181d182d0b0d0bdd0bed0b2d0bbd0b5d0bdd0bdd0bed0bcd18320d0b2d0b8d0b4d0b6d0b5d182d18320607461726020d0b2d0be20d0b2d180d0b5d0bcd18f20d180d0b0d0b1d0bed182d18b20d0bdd0b520d0bdd183d0b6d0b5d0bd2e'; printf '\n'
+    decode_utf8_hex 'd0a3d181d182d0b0d0bdd0bed0b2d189d0b8d0ba20d0b7d0b0d0bfd180d0b0d188d0b8d0b2d0b0d0b5d18220d0bad0bbd18ed18720d183d0bfd180d0b0d0b2d0bbd0b5d0bdd0b8d18f20d187d0b5d180d0b5d0b720602f6465762f7474796020d0b820d181d0bad180d18bd0b2d0b0d0b5d18220d0b2d0b2d0bed0b42e20d097d0b0d0bfd180d0bed18120d180d0b0d0b1d0bed182d0b0d0b5d1822c20d0b4d0b0d0b6d0b520d0bad0bed0b3d0b4d0b020d181d182d0b0d0bdd0b4d0b0d180d182d0bdd18bd0b920d0b2d0b2d0bed0b420d0b7d0b0d0bdd18fd18220d0bad0bed0bdd0b2d0b5d0b9d0b5d180d0bed0bc20d181d0be20d181d0bad180d0b8d0bfd182d0bed0bc2e'; printf '\n'
+    decode_utf8_hex 'd094d0bbd18f20d0bbd0bed0bad0b0d0bbd18cd0bdd0be20d0b7d0b0d0b3d180d183d0b6d0b5d0bdd0bdd0bed0b3d0be20d183d181d182d0b0d0bdd0bed0b2d189d0b8d0bad0b020602d2d6d616e6167656d656e742d6b65792d737464696e6020d187d0b8d182d0b0d0b5d18220d0bed0b4d0bdd18320d181d182d180d0bed0bad18320d0b8d0b720d181d182d0b0d0bdd0b4d0b0d180d182d0bdd0bed0b3d0be20d0b2d0b2d0bed0b4d0b02e20d0add182d0bed18220d180d0b5d0b6d0b8d0bc20d0bfd180d0b5d0b4d0bdd0b0d0b7d0bdd0b0d187d0b5d0bd20d0b4d0bbd18f20d0bbd0bed0bad0b0d0bbd18cd0bdd0bed0b3d0be20d0b8d181d0bfd0bed0bbd18cd0b7d0bed0b2d0b0d0bdd0b8d18f2c20d0bfd0bed182d0bed0bcd18320d187d182d0be20d0b220606375726c207c20626173686020d181d182d0b0d0bdd0b4d0b0d180d182d0bdd18bd0b920d0b2d0b2d0bed0b420d183d0b6d0b520d0b7d0b0d0bdd18fd1823a'; printf '\n'
+    decode_utf8_hex 'd093d180d183d0bfd0bfd18b20d0b820d0bbd0b8d0bcd0b8d182d18b20d0b0d0bad0bad0b0d183d0bdd182d0bed0b220416e7469677261766974792c20d0b2d0bad0bbd18ed187d0b0d18f20d0bed181d182d0b0d0b2d188d0b8d0b5d181d18f20d0bfd180d0bed186d0b5d0bdd182d18b20d0b820d0b2d180d0b5d0bcd18f20d181d0b1d180d0bed181d0b02e'; printf '\n'
+    decode_utf8_hex 'd09ed181d182d0b0d0b2d188d0b8d0b9d181d18f20d0bfd180d0bed186d0b5d0bdd18220d0b820d0b2d180d0b5d0bcd18f20d181d0b1d180d0bed181d0b020d0bed181d0bdd0bed0b2d0bdd0bed0b3d0be20d0bed0bad0bdd0b020436f6465782e'; printf '\n'
+    decode_utf8_hex 'd09fd183d0b1d0bbd0b8d187d0bdd18bd0b520d180d0b5d0bbd0b8d0b7d18b20d0b8d181d0bfd0bed0bbd18cd0b7d183d18ed18220d182d0b5d0b3d0b82c20d0bdd0b0d187d0b8d0bdd0b0d18ed189d0b8d0b5d181d18f20d181206076602e'; printf '\n'
+    decode_utf8_hex 'd0a0d0b5d0bbd0b8d0b720d0b4d0bed0bbd0b6d0b5d0bd20d181d0bed0b4d0b5d180d0b6d0b0d182d18c20d0b0d180d185d0b8d0b22060717569636b7368656c6c2d71756f7461732d7769646765742d3c7461673e2e7461722e677a6020d180d0bed0b2d0bdd0be20d18120d182d180d0b5d0bcd18f20d0bed0b1d18bd187d0bdd18bd0bcd0b820d184d0b0d0b9d0bbd0b0d0bcd0b820d0b2d0b5d180d185d0bdd0b5d0b3d0be20d183d180d0bed0b2d0bdd18f3a206051756f7461732e716d6c602c206051756f746173506f7075702e716d6c6020d0b820606765742d71756f7461732e7368602e'; printf '\n'
+    decode_utf8_hex 'd09fd183d0b1d0bbd0b8d187d0bdd18bd0b920d183d181d182d0b0d0bdd0bed0b2d189d0b8d0ba20d0b7d0b0d0bfd180d0b0d188d0b8d0b2d0b0d0b5d18220d0bfd0bed181d0bbd0b5d0b4d0bdd0b8d0b9204769744875622052656c6561736520d0b820d0bed182d0bad0bbd0bed0bdd18fd0b5d18220d0bed182d181d183d182d181d182d0b2d183d18ed189d0b8d0b52c20d0b4d183d0b1d0bbd0b8d180d183d18ed189d0b8d0b5d181d18f2c20d0b2d0bbd0bed0b6d0b5d0bdd0bdd18bd0b52c20d0bbd0b8d188d0bdd0b8d0b520d0b8d0bbd0b820d0bdd0b5d0b1d0b5d0b7d0bed0bfd0b0d181d0bdd18bd0b520d18dd0bbd0b5d0bcd0b5d0bdd182d18b20d0b0d180d185d0b8d0b2d0b02e'; printf '\n'
+}
+
 russian_contract_anchors() {
     russian_section_headings
     decode_utf8_hex 'd0add182d0be20d0bdd0b520d183d0bdd0b8d0b2d0b5d180d181d0b0d0bbd18cd0bdd18bd0b920d183d181d182d0b0d0bdd0bed0b2d189d0b8d0ba'; printf '\n'
@@ -166,6 +177,7 @@ russian_contract_anchors() {
     decode_utf8_hex 'd0b0d0b2d182d0bed0bcd0b0d182d0b8d187d0b5d181d0bad0b820d0bed182d0bad0b0d182d18bd0b2d0b0d0b5d182'; printf '\n'
     printf '%s\n' 'bash tests/run.sh' 'quickshell-quotas-widget-<tag>.tar.gz'
     decode_utf8_hex 'd09fd183d0b1d0bbd0b8d187d0bdd18bd0b520d180d0b5d0bbd0b8d0b7d18b20d0b8d181d0bfd0bed0bbd18cd0b7d183d18ed18220d182d0b5d0b3d0b8'; printf '\n'
+    round3_russian_contract_anchors
 }
 
 validate_russian_contract() {
@@ -203,6 +215,18 @@ test_russian_contract_rejects_each_removed_anchor() {
     done < <(russian_contract_anchors)
 
     ((count > 12)) || fail 'Russian contract must include section headings and detail anchors'
+}
+
+test_russian_contract_registers_round3_details() {
+    local registered required required_anchors
+    registered="$(russian_contract_anchors)"
+    required_anchors="$(round3_russian_contract_anchors)" || return 1
+    [[ -n "$required_anchors" ]] || fail 'round 3 Russian anchor registry is empty' || return 1
+
+    while IFS= read -r required; do
+        [[ -n "$required" ]] || continue
+        assert_contains "$registered" "$required" || return 1
+    done <<<"$required_anchors"
 }
 
 test_russian_guide_documents_validation_sequence() {
@@ -269,6 +293,7 @@ run_test 'documents exact provider scope' test_documents_exact_provider_scope
 run_test 'has English and Russian guides' test_has_english_and_russian_guides
 run_test 'Russian guide covers public contract' test_russian_guide_covers_public_contract
 run_test 'Russian contract rejects each removed anchor' test_russian_contract_rejects_each_removed_anchor
+run_test 'Russian contract registers round 3 details' test_russian_contract_registers_round3_details
 run_test 'Russian guide documents validation sequence' test_russian_guide_documents_validation_sequence
 run_test 'translations use identical commands' test_translations_use_identical_commands
 run_test 'removes legacy machine requirements' test_removes_legacy_machine_requirements

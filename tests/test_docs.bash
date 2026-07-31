@@ -119,9 +119,12 @@ test_has_english_and_russian_guides() {
     assert_contains "$content" "$russian_heading"
 }
 
-test_russian_guide_covers_public_contract() {
-    local -a anchors=(
+russian_section_headings() {
+    local -a headings=(
+        '23232320d09dd0b0d0b7d0bdd0b0d187d0b5d0bdd0b8d0b520d0b820d181d0bed0b2d0bcd0b5d181d182d0b8d0bcd0bed181d182d18c'
+        '23232320d09ed182d0bed0b1d180d0b0d0b6d0b0d0b5d0bcd18bd0b520d0bad0b2d0bed182d18b'
         '23232320d097d0b0d0b2d0b8d181d0b8d0bcd0bed181d182d0b8'
+        '23232320d0a0d0b5d0bad0bed0bcd0b5d0bdd0b4d183d0b5d0bcd0b0d18f20d183d181d182d0b0d0bdd0bed0b2d0bad0b020d0bed0b4d0bdd0bed0b920d0bad0bed0bcd0b0d0bdd0b4d0bed0b9'
         '23232320d0a4d0bbd0b0d0b3d0b820d0b0d0b2d182d0bed0bcd0b0d182d0b8d0b7d0b0d186d0b8d0b820d0b820d180d0b0d181d0bad180d18bd182d0b8d0b520d0bad0bbd18ed187d0b0'
         '23232320d094d180d183d0b3d0bed0b920d0bad0b0d182d0b0d0bbd0bed0b320d183d181d182d0b0d0bdd0bed0b2d0bad0b8'
         '23232320d0a5d180d0b0d0bdd0b5d0bdd0b8d0b520d183d187d0b5d182d0bdd18bd18520d0b4d0b0d0bdd0bdd18bd185'
@@ -129,23 +132,77 @@ test_russian_guide_covers_public_contract() {
         '23232320d09fd180d0b8d0bcd0b5d0bdd0b5d0bdd0b8d0b520d0b8d0b7d0bcd0b5d0bdd0b5d0bdd0b8d0b920d0b8d0bbd0b820d0bfd0b5d180d0b5d0b7d0b0d0bfd183d181d0ba20517569636b7368656c6c'
         '23232320d0a0d183d187d0bdd0b0d18f20d183d181d182d0b0d0bdd0bed0b2d0bad0b020d0b8d0bbd0b820d0b2d0bed181d181d182d0b0d0bdd0bed0b2d0bbd0b5d0bdd0b8d0b5'
         '23232320d0a0d0b5d0b7d0b5d180d0b2d0bdd18bd0b520d0bad0bed0bfd0b8d0b820d0b820d0bed182d0bad0b0d182'
-        'd09fd0bed0b4d0b4d0b5d180d0b6d0b8d0b2d0b0d18ed182d181d18f20d182d0bed0bbd18cd0bad0be20d0bfd180d0bed0b2d0b0d0b9d0b4d0b5d180d18b20d0bad0b2d0bed18220416e74696772617669747920d0b820436f6465782e'
-        'd181d0bad180d18bd0b2d0b0d0b5d18220d0b2d0b2d0bed0b4'
-        'd0b8d181d182d0bed180d0b8d18e20d0bed0b1d0bed0bbd0bed187d0bad0b820d0b820d181d0bfd0b8d181d0bed0ba20d0bfd180d0bed186d0b5d181d181d0bed0b2'
-        'd0bed182d0bad180d18bd182d18bd0bc20d182d0b5d0bad181d182d0bed0bc'
-        'd0bfd0bed0b2d182d0bed180d0bdd0be20d0b2d18bd0bfd0bed0bbd0bdd0b8d182d0b520d182d18320d0b6d0b520d0bad0bed0bcd0b0d0bdd0b4d18320d183d181d182d0b0d0bdd0bed0b2d189d0b8d0bad0b0'
-        'd0b0d0b2d182d0bed0bcd0b0d182d0b8d187d0b5d181d0bad0b820d0bed182d0bad0b0d182d18bd0b2d0b0d0b5d182'
+        '23232320d0a2d0b5d181d182d18b20d180d0b0d0b7d180d0b0d0b1d0bed182d0bad0b820d0b820d180d0b5d0bbd0b8d0b7d18b'
     )
-    local hex anchor
+    local hex
+
+    for hex in "${headings[@]}"; do
+        decode_utf8_hex "$hex"
+        printf '\n'
+    done
+}
+
+russian_contract_anchors() {
+    russian_section_headings
+    decode_utf8_hex 'd0add182d0be20d0bdd0b520d183d0bdd0b8d0b2d0b5d180d181d0b0d0bbd18cd0bdd18bd0b920d183d181d182d0b0d0bdd0bed0b2d189d0b8d0ba'; printf '\n'
+    decode_utf8_hex 'd09fd0bed0b4d0b4d0b5d180d0b6d0b8d0b2d0b0d18ed182d181d18f20d182d0bed0bbd18cd0bad0be20d0bfd180d0bed0b2d0b0d0b9d0b4d0b5d180d18b20d0bad0b2d0bed18220416e74696772617669747920d0b820436f6465782e'; printf '\n'
+    printf '%s\n' 'Bash 4+' '`curl`' '`jq`' '`tar`'
+    decode_utf8_hex 'd0bdd0b5d0bed0b1d18fd0b7d0b0d182d0b5d0bbd18cd0bdd18b'; printf '\n'
+    printf '%s\n' 'notify-send' 'secret-tool'
+    printf '%s\n' 'curl -fsSL https://raw.githubusercontent.com/gukovskiy98/quickshell-quotas-widget/master/install.sh'
+    decode_utf8_hex 'd181d0bad180d18bd0b2d0b0d0b5d18220d0b2d0b2d0bed0b4'; printf '\n'
+    printf '%s\n' '/dev/tty' '--management-key' '--management-key-stdin'
+    decode_utf8_hex 'd0b8d181d182d0bed180d0b8d18e20d0bed0b1d0bed0bbd0bed187d0bad0b820d0b820d181d0bfd0b8d181d0bed0ba20d0bfd180d0bed186d0b5d181d181d0bed0b2'; printf '\n'
+    printf '%s\n' '--install-dir' 'CONFIG_ROOT'
+    decode_utf8_hex 'd0bad0b0d182d0b0d0bbd0bed0b320d0bcd0bed0b4d183d0bbd0b5d0b920d0bfd0b0d0bdd0b5d0bbd0b820656e64342d646f7473'; printf '\n'
+    decode_utf8_hex 'd09fd180d0b5d0b4d0bfd0bed187d182d0b8d182d0b5d0bbd18cd0bdd0be20d185d180d0b0d0bdd0b8d0bbd0b8d189d0b5205365637265742053657276696365'; printf '\n'
+    printf '%s\n' 'quotas-widget.conf' 'jq -Rs'
+    decode_utf8_hex '4a534f4e2dd184d0b0d0b9d0bb20d18120d0bfd180d0b0d0b2d0b0d0bcd0b8206036303060'; printf '\n'
+    decode_utf8_hex 'd0bed182d0bad180d18bd182d18bd0bc20d182d0b5d0bad181d182d0bed0bc'; printf '\n'
+    decode_utf8_hex 'd0bfd0bed0b2d182d0bed180d0bdd0be20d0b2d18bd0bfd0bed0bbd0bdd0b8d182d0b520d182d18320d0b6d0b520d0bad0bed0bcd0b0d0bdd0b4d18320d183d181d182d0b0d0bdd0bed0b2d189d0b8d0bad0b0'; printf '\n'
+    printf '%s\n' 'qs -p "$CONFIG_ROOT" kill' 'qs -p "$CONFIG_ROOT" --daemonize'
+    printf '%s\n' 'install -m 644 Quotas.qml QuotasPopup.qml' 'install -m 700 get-quotas.sh' "IFS= read -r -s -p 'Management key: ' MANAGEMENT_KEY"
+    decode_utf8_hex 'd180d0b5d0b7d0b5d180d0b2d0bdd183d18e20d0bad0bed0bfd0b8d18e20d18120d0bcd0b5d182d0bad0bed0b920d0b2d180d0b5d0bcd0b5d0bdd0b8'; printf '\n'
+    decode_utf8_hex 'd0b0d0b2d182d0bed0bcd0b0d182d0b8d187d0b5d181d0bad0b820d0bed182d0bad0b0d182d18bd0b2d0b0d0b5d182'; printf '\n'
+    printf '%s\n' 'bash tests/run.sh' 'quickshell-quotas-widget-<tag>.tar.gz'
+    decode_utf8_hex 'd09fd183d0b1d0bbd0b8d187d0bdd18bd0b520d180d0b5d0bbd0b8d0b7d18b20d0b8d181d0bfd0bed0bbd18cd0b7d183d18ed18220d182d0b5d0b3d0b8'; printf '\n'
+}
+
+validate_russian_contract() {
+    local guide="$1" anchor heading remainder="$1"
+
+    while IFS= read -r anchor; do
+        [[ -n "$anchor" ]] || continue
+        assert_contains "$guide" "$anchor" || return 1
+    done < <(russian_contract_anchors)
+
+    while IFS= read -r heading; do
+        [[ -n "$heading" ]] || continue
+        [[ "$remainder" == *"$heading"* ]] || fail "missing ordered Russian section [$heading]" || return 1
+        remainder="${remainder#*"$heading"}"
+    done < <(russian_section_headings)
+}
+
+test_russian_guide_covers_public_contract() {
+    read_guides
+    validate_russian_contract "$RUSSIAN_GUIDE"
+}
+
+test_russian_contract_rejects_each_removed_anchor() {
+    local anchor mutated count=0
     read_guides
 
-    for hex in "${anchors[@]}"; do
-        anchor="$(decode_utf8_hex "$hex")"
-        assert_contains "$RUSSIAN_GUIDE" "$anchor" || return 1
-    done
-    assert_contains "$RUSSIAN_GUIDE" '--install-dir' || return 1
-    assert_contains "$RUSSIAN_GUIDE" 'CONFIG_ROOT' || return 1
-    assert_contains "$RUSSIAN_GUIDE" 'quotas-widget.conf'
+    validate_russian_contract "$RUSSIAN_GUIDE" || return 1
+    while IFS= read -r anchor; do
+        [[ -n "$anchor" ]] || continue
+        count=$((count + 1))
+        mutated="${RUSSIAN_GUIDE//"$anchor"/}"
+        if validate_russian_contract "$mutated" >/dev/null 2>&1; then
+            fail "Russian contract accepted removal of required anchor $count" || return 1
+        fi
+    done < <(russian_contract_anchors)
+
+    ((count > 12)) || fail 'Russian contract must include section headings and detail anchors'
 }
 
 test_russian_guide_documents_validation_sequence() {
@@ -211,6 +268,7 @@ run_test 'documents validation sequence' test_documents_validation_sequence
 run_test 'documents exact provider scope' test_documents_exact_provider_scope
 run_test 'has English and Russian guides' test_has_english_and_russian_guides
 run_test 'Russian guide covers public contract' test_russian_guide_covers_public_contract
+run_test 'Russian contract rejects each removed anchor' test_russian_contract_rejects_each_removed_anchor
 run_test 'Russian guide documents validation sequence' test_russian_guide_documents_validation_sequence
 run_test 'translations use identical commands' test_translations_use_identical_commands
 run_test 'removes legacy machine requirements' test_removes_legacy_machine_requirements

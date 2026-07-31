@@ -25,8 +25,9 @@ reset_installer_state() {
     TX_ROLLING_BACK=0
     TX_REPLACED_PATHS=()
     TX_BACKUP_PATHS=()
+    TX_REPLACED_MODES=()
     TX_CREATED_PATHS=()
-    unset QUOTAS_TIMESTAMP QUOTAS_SKIP_RESTART QUOTAS_QS_BIN
+    unset QUOTAS_TIMESTAMP QUOTAS_SKIP_RESTART QUOTAS_QS_BIN QUOTAS_WRITABLE_PROBE_FAIL
 }
 
 prepare_installer_fixture() {
@@ -1265,9 +1266,148 @@ test_corrects_identical_fallback_mode_transactionally() {
     begin_transaction || return 1
     store_credentials >/dev/null 2>&1 || return 1
     assert_file_mode 600 "$FALLBACK_CONFIG" || return 1
-    assert_file_mode 644 "$FALLBACK_CONFIG.backup.20260731-143000" || return 1
+    assert_file_mode 600 "$FALLBACK_CONFIG.backup.20260731-143000" || return 1
     rollback_transaction || return 1
     assert_file_mode 644 "$FALLBACK_CONFIG"
+}
+
+test_keyring_switch_secures_fallback_backup_and_restores_original_mode() {
+    prepare_installer_fixture
+    QUOTAS_TIMESTAMP='20260731-143000'
+    FALLBACK_CONFIG="$INSTALL_DIR/quotas-widget.conf"
+    printf '{"apiUrl":"old","managementKey":"old"}\n' >"$FALLBACK_CONFIG"
+    chmod 644 "$FALLBACK_CONFIG"
+
+    begin_transaction || return 1
+    store_credentials || return 1
+    [[ ! -e "$FALLBACK_CONFIG" ]] || fail 'keyring switch must remove active fallback' || return 1
+    assert_file_mode 600 "$FALLBACK_CONFIG.backup.20260731-143000" || return 1
+    rollback_transaction || return 1
+    assert_eq '{"apiUrl":"old","managementKey":"old"}' "$(<"$FALLBACK_CONFIG")" || return 1
+    assert_file_mode 644 "$FALLBACK_CONFIG"
+}
+
+test_writable_target_preflight_covers_every_persistent_destination() {
+    local stage output status
+
+    for stage in install-dir bar-content payload fallback; do
+        prepare_transaction_fixture
+        QUOTAS_WRITABLE_PROBE_FAIL="$stage"
+        set +e
+        output="$(validate_writable_targets 2>&1)"
+        status=$?
+        set -e
+        [[ $status -ne 0 ]] || fail "forced $stage probe failure must fail" || return 1
+        assert_contains "$output" "$stage" || return 1
+        if compgen -G "$INSTALL_DIR/*.probe.*" >/dev/null \
+            || compgen -G "$INSTALL_DIR/*.backup.20260731-143000" >/dev/null; then
+            fail 'writable probe artifact remained' || return 1
+        fi
+    done
+}
+
+test_main_rejects_unwritable_target_before_keyring_writes() {
+    local release_archive="$TEST_TMP_ROOT/release.tar.gz" output status
+    create_release_archive "$release_archive"
+    prepare_main_fixture "$release_archive"
+    QUOTAS_WRITABLE_PROBE_FAIL='bar-content'
+    export QUOTAS_WRITABLE_PROBE_FAIL
+
+    set +e
+    output="$(PATH="$TEST_TMP_ROOT/bin:$PATH" run_with_mock_curl main \
+        --api-url "$API_URL" --management-key "$MANAGEMENT_KEY" --install-dir "$INSTALL_DIR" 2>&1)"
+    status=$?
+    set -e
+    [[ $status -ne 0 ]] || fail 'unwritable destination must stop installation' || return 1
+    assert_contains "$output" 'bar-content' || return 1
+    [[ ! -e "$MOCK_SECRET_STORE_DIR/quotasApiUrl" ]] || fail 'preflight failure must precede keyring API URL write' || return 1
+    [[ ! -e "$MOCK_SECRET_STORE_DIR/quotasManagementKey" ]] || fail 'preflight failure must precede keyring key write'
+}
+
+test_inserts_with_braces_in_block_comments_and_backtick_strings() {
+    prepare_end4_fixture
+    local bar_file="$CONFIG_ROOT/modules/ii/bar/BarContent.qml"
+
+    cat >"$bar_file" <<'EOF'
+Item {
+    BarGroup {
+        id: leftCenterGroup
+        Resources {
+            /* block comment with } and Resources { bogus } */
+            property string templateValue: `literal } ${value} { tail`
+        }
+        Media {}
+    }
+}
+EOF
+
+    validate_end4_layout || return 1
+    integrate_bar_content || return 1
+    assert_contains "$(<"$bar_file")" $'        }\n        // quickshell-quotas-widget:start\n        Quotas {'
+}
+
+test_existing_marker_survives_block_comments_and_backtick_strings() {
+    prepare_end4_fixture
+    local bar_file="$CONFIG_ROOT/modules/ii/bar/BarContent.qml" before="$TEST_TMP_ROOT/before.qml"
+
+    cat >"$bar_file" <<'EOF'
+Item {
+    BarGroup {
+        id: leftCenterGroup
+        Resources {
+            /* } { */
+            property string templateValue: `template { value }`
+        }
+        // quickshell-quotas-widget:start
+        Quotas {
+            visible: true
+            Layout.fillWidth: false
+        }
+        // quickshell-quotas-widget:end
+        Media {}
+    }
+}
+EOF
+    cp "$bar_file" "$before"
+
+    validate_end4_layout || return 1
+    integrate_bar_content || return 1
+    cmp -s "$before" "$bar_file" || fail 'existing marker content changed around comments or backticks'
+}
+
+test_bar_integration_preserves_mode_600() {
+    prepare_end4_fixture
+    local bar_file="$CONFIG_ROOT/modules/ii/bar/BarContent.qml"
+    chmod 600 "$bar_file"
+
+    integrate_bar_content || return 1
+    assert_file_mode 600 "$bar_file"
+}
+
+test_bar_integration_preserves_mode_664_and_rollback() {
+    prepare_end4_fixture
+    local bar_file="$CONFIG_ROOT/modules/ii/bar/BarContent.qml" original="$TEST_TMP_ROOT/original.qml"
+    cp "$bar_file" "$original"
+    chmod 664 "$bar_file"
+    QUOTAS_TIMESTAMP='20260731-143000'
+
+    begin_transaction || return 1
+    integrate_bar_content || return 1
+    assert_file_mode 664 "$bar_file" || return 1
+    chmod 600 "$bar_file"
+    rollback_transaction || return 1
+    cmp -s "$original" "$bar_file" || fail 'rollback did not restore original BarContent.qml' || return 1
+    assert_file_mode 664 "$bar_file"
+}
+
+test_ci_checks_release_packaging_script() {
+    local workflow content
+
+    for workflow in test.yml release.yml; do
+        content="$(<"$repo_root/.github/workflows/$workflow")"
+        assert_contains "$content" 'bash -n install.sh get-quotas.sh scripts/package-release.sh tests/*.bash tests/helpers/*.sh' || return 1
+        assert_contains "$content" 'shellcheck install.sh get-quotas.sh scripts/package-release.sh tests/*.bash tests/helpers/*.sh' || return 1
+    done
 }
 
 test_rolls_back_payload_when_bar_integration_fails() {
@@ -1616,6 +1756,13 @@ run_test 'reports unsafe insertion under errexit' test_reports_unsafe_insertion_
 run_test 'installs payload with modes and backups' test_installs_payload_with_expected_modes_and_backups
 run_test 'corrects identical payload modes transactionally' test_corrects_identical_payload_modes_transactionally
 run_test 'corrects identical fallback mode transactionally' test_corrects_identical_fallback_mode_transactionally
+run_test 'keyring switch secures fallback backup and restores original mode' test_keyring_switch_secures_fallback_backup_and_restores_original_mode
+run_test 'writable-target preflight covers every persistent destination' test_writable_target_preflight_covers_every_persistent_destination
+run_test 'main rejects unwritable target before keyring writes' test_main_rejects_unwritable_target_before_keyring_writes
+run_test 'inserts with braces in block comments and backtick strings' test_inserts_with_braces_in_block_comments_and_backtick_strings
+run_test 'existing marker survives block comments and backtick strings' test_existing_marker_survives_block_comments_and_backtick_strings
+run_test 'bar integration preserves mode 600' test_bar_integration_preserves_mode_600
+run_test 'bar integration preserves mode 664 and rollback' test_bar_integration_preserves_mode_664_and_rollback
 run_test 'rolls back payload when bar integration fails' test_rolls_back_payload_when_bar_integration_fails
 run_test 'rejects payload symlink destination' test_rejects_payload_symlink_destination
 run_test 'smoke failure rolls back payload bar and fallback' test_smoke_failure_rolls_back_payload_bar_and_fallback
@@ -1636,5 +1783,6 @@ run_test 'restart failure after commit does not roll back' test_restart_failure_
 run_test 'main rejects release before storing credentials' test_main_rejects_release_before_storing_credentials
 run_test 'main rolls back when smoke test fails' test_main_rolls_back_when_smoke_test_fails
 run_test 'main stores credentials after API validation' test_main_stores_credentials_after_api_validation
+run_test 'CI checks release packaging script' test_ci_checks_release_packaging_script
 
 finish_tests

@@ -46,6 +46,11 @@ for header_file in "${header_files[@]}"; do
     fi
 done
 
+if [[ -n "${MOCK_CURL_BLOCK_READY:-}" ]]; then
+    : >"$MOCK_CURL_BLOCK_READY"
+    sleep "${MOCK_CURL_BLOCK_SECONDS:-60}"
+fi
+
 counter_file="$MOCK_CURL_QUEUE_DIR/.counter"
 counter=0
 [[ ! -f "$counter_file" ]] || counter="$(<"$counter_file")"

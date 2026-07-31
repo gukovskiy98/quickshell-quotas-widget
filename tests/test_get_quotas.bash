@@ -13,11 +13,15 @@ prepare_fetcher() {
     MOCK_CURL_QUEUE_DIR="$TEST_TMP_ROOT/curl-queue"
     MOCK_CURL_LOG="$TEST_TMP_ROOT/curl.log"
     MOCK_CURL_HEADERS_LOG="$TEST_TMP_ROOT/curl-headers.log"
+    MOCK_CURL_OUTPUTS_LOG="$TEST_TMP_ROOT/curl-outputs.log"
+    MOCK_CURL_HEADER_PATHS_LOG="$TEST_TMP_ROOT/curl-header-paths.log"
     MOCK_SECRET_STORE_DIR="$TEST_TMP_ROOT/secrets"
     QUOTAS_CONFIG_PATH="$TEST_TMP_ROOT/quotas-widget.conf"
     mkdir -p "$MOCK_CURL_QUEUE_DIR" "$MOCK_SECRET_STORE_DIR"
     : >"$MOCK_CURL_LOG"
     : >"$MOCK_CURL_HEADERS_LOG"
+    : >"$MOCK_CURL_OUTPUTS_LOG"
+    : >"$MOCK_CURL_HEADER_PATHS_LOG"
 }
 
 write_config() {
@@ -54,6 +58,8 @@ run_fetcher() {
         MOCK_CURL_QUEUE_DIR="$MOCK_CURL_QUEUE_DIR" \
         MOCK_CURL_LOG="$MOCK_CURL_LOG" \
         MOCK_CURL_HEADERS_LOG="$MOCK_CURL_HEADERS_LOG" \
+        MOCK_CURL_OUTPUTS_LOG="$MOCK_CURL_OUTPUTS_LOG" \
+        MOCK_CURL_HEADER_PATHS_LOG="$MOCK_CURL_HEADER_PATHS_LOG" \
         MOCK_SECRET_STORE_DIR="$MOCK_SECRET_STORE_DIR" \
         MOCK_SECRET_FAIL_STORE="${MOCK_SECRET_FAIL_STORE:-0}" \
         MOCK_SECRET_FAIL_LOOKUP="${MOCK_SECRET_FAIL_LOOKUP:-0}" \
@@ -210,6 +216,13 @@ test_rejects_invalid_auth_files_json() {
     write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
     queue_http_text 200 'not-json'
     assert_fetcher_fails_with 'invalid JSON'
+}
+
+test_rejects_multiple_auth_files_json_documents() {
+    prepare_fetcher
+    write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
+    queue_http_text 200 $'{"files":[]}\n{"files":[]}'
+    assert_fetcher_fails_with 'single JSON document'
 }
 
 test_rejects_missing_files_array() {
@@ -435,6 +448,77 @@ test_accepts_object_wrapper_body() {
     jq -e '.quotas[0].groups[0].items[0].val == "60.00%"' <<<"$output" >/dev/null
 }
 
+test_rejects_multiple_proxy_json_documents() {
+    prepare_fetcher
+    write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
+    queue_http_text 200 '{"files":[{"name":"codex.json","type":"codex","auth_index":11}]}'
+    queue_http_text 200 $'{"status_code":200,"body":{}}\n{"status_code":200,"body":{}}'
+    local stdout_file="$TEST_TMP_ROOT/stdout" stderr_file="$TEST_TMP_ROOT/stderr"
+
+    run_fetcher >"$stdout_file" 2>"$stderr_file" || return 1
+
+    jq -e '.quotas == []' "$stdout_file" >/dev/null || return 1
+    assert_contains "$(<"$stderr_file")" 'single JSON document'
+}
+
+test_skips_non_object_auth_file_members_and_continues() {
+    prepare_fetcher
+    write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
+    queue_http_text 200 '{"files":[null,"bad",[],17,{"name":"codex.json","type":"codex","auth_index":11}]}'
+    queue_http 200 "$FIXTURES/api/codex-response.json"
+
+    local output
+    output="$(run_fetcher)" || return 1
+
+    jq -e '.quotas | length == 1 and .[0].name == "codex.json"' <<<"$output" >/dev/null
+}
+
+test_cleans_request_temp_directory_on_term() {
+    prepare_fetcher
+    write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
+    queue_http 200 "$FIXTURES/api/auth-files-empty.json"
+    local ready="$TEST_TMP_ROOT/curl-ready" request_parent="$TEST_TMP_ROOT/request-tmp"
+    local stdout_file="$TEST_TMP_ROOT/stdout" stderr_file="$TEST_TMP_ROOT/stderr" pid status path request_dir index
+    mkdir -p "$request_parent"
+
+    setsid env \
+        QUOTAS_CONFIG_PATH="$QUOTAS_CONFIG_PATH" \
+        QUOTAS_CURL_BIN="$CURL_MOCK" \
+        QUOTAS_SECRET_TOOL_BIN="$SECRET_MOCK" \
+        QUOTAS_REQUEST_TMP_PARENT="$request_parent" \
+        MOCK_CURL_QUEUE_DIR="$MOCK_CURL_QUEUE_DIR" \
+        MOCK_CURL_LOG="$MOCK_CURL_LOG" \
+        MOCK_CURL_HEADERS_LOG="$MOCK_CURL_HEADERS_LOG" \
+        MOCK_CURL_OUTPUTS_LOG="$MOCK_CURL_OUTPUTS_LOG" \
+        MOCK_CURL_HEADER_PATHS_LOG="$MOCK_CURL_HEADER_PATHS_LOG" \
+        MOCK_CURL_BLOCK_READY="$ready" \
+        MOCK_SECRET_STORE_DIR="$MOCK_SECRET_STORE_DIR" \
+        bash "$FETCHER" >"$stdout_file" 2>"$stderr_file" &
+    pid=$!
+
+    for ((index = 0; index < 200; index++)); do
+        [[ ! -e "$ready" ]] || break
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.01
+    done
+    [[ -e "$ready" ]] || {
+        kill -TERM -- "-$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+        fail 'mock curl did not reach interruption point' || return 1
+    }
+    path="$(<"$MOCK_CURL_HEADER_PATHS_LOG")"
+    request_dir="${path%/*}"
+    assert_file_mode 700 "$request_dir" || return 1
+
+    kill -TERM -- "-$pid"
+    set +e
+    wait "$pid"
+    status=$?
+    set -e
+    [[ $status -ne 0 ]] || fail 'TERM must stop the fetcher' || return 1
+    [[ ! -e "$request_dir" ]] || fail "request temp directory remained after TERM: $request_dir"
+}
+
 test_formats_percentages_with_dot_under_comma_locale() {
     prepare_fetcher
     write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
@@ -610,6 +694,7 @@ run_test 'rejects incomplete keyring pair' test_rejects_incomplete_keyring_pair
 run_test 'reports curl transport failure' test_reports_curl_transport_failure
 run_test 'rejects non-2xx auth-files response' test_rejects_non_2xx_auth_files_response
 run_test 'rejects invalid auth-files JSON' test_rejects_invalid_auth_files_json
+run_test 'rejects multiple auth-files JSON documents' test_rejects_multiple_auth_files_json_documents
 run_test 'rejects missing files array' test_rejects_missing_files_array
 run_test 'keeps stdout JSON only' test_keeps_stdout_json_only
 run_test 'single JSON validator rejects JSON streams' test_single_json_validator_rejects_json_stream
@@ -625,6 +710,9 @@ run_test 'downloads Antigravity auth file for project ID' test_downloads_antigra
 run_test 'rejects upstream error status' test_rejects_upstream_error_status
 run_test 'accepts string wrapper body' test_accepts_string_wrapper_body
 run_test 'accepts object wrapper body' test_accepts_object_wrapper_body
+run_test 'rejects multiple proxy JSON documents' test_rejects_multiple_proxy_json_documents
+run_test 'skips non-object auth-file members and continues' test_skips_non_object_auth_file_members_and_continues
+run_test 'cleans request temp directory on TERM' test_cleans_request_temp_directory_on_term
 run_test 'formats percentages with dot under comma locale' test_formats_percentages_with_dot_under_comma_locale
 run_test 'cleans aggregation temp files after unexpected failure' test_cleans_aggregation_temp_files_after_unexpected_failure
 run_test 'falls back from empty Antigravity display names' test_falls_back_from_empty_antigravity_display_names

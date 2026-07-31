@@ -11,10 +11,34 @@ HTTP_BODY=""
 API_CALL_BODY=""
 QUOTA_ACCOUNT=""
 QUOTA_REMAINING=""
+REQUEST_TMP_DIR=""
 
 die() {
     printf 'Error: %s\n' "$1" >&2
     return 1
+}
+
+cleanup_request_tmp_dir() {
+    [[ -z "$REQUEST_TMP_DIR" ]] || rm -rf -- "$REQUEST_TMP_DIR"
+    REQUEST_TMP_DIR=""
+}
+
+ensure_request_tmp_dir() {
+    local parent="${QUOTAS_REQUEST_TMP_PARENT:-${TMPDIR:-/tmp}}"
+
+    if [[ -n "$REQUEST_TMP_DIR" ]]; then
+        [[ -d "$REQUEST_TMP_DIR" ]] || {
+            die 'temporary request directory disappeared' || return 1
+        }
+        return 0
+    fi
+    REQUEST_TMP_DIR="$(mktemp -d "$parent/quickshell-quotas-widget.XXXXXX")" || {
+        die 'cannot create temporary request directory' || return 1
+    }
+    chmod 700 "$REQUEST_TMP_DIR" || {
+        cleanup_request_tmp_dir
+        die 'cannot secure temporary request directory' || return 1
+    }
 }
 
 load_credentials() {
@@ -72,10 +96,11 @@ curl_json() {
     local response_file header_file status curl_status
     local -a curl_args
 
-    response_file="$(mktemp)" || {
+    ensure_request_tmp_dir || return 1
+    response_file="$(mktemp "$REQUEST_TMP_DIR/response.XXXXXX")" || {
         die 'cannot create temporary response file' || return 1
     }
-    header_file="$(mktemp)" || {
+    header_file="$(mktemp "$REQUEST_TMP_DIR/header.XXXXXX")" || {
         rm -f -- "$response_file"
         die 'cannot create temporary header file' || return 1
     }
@@ -118,8 +143,11 @@ curl_json() {
     [[ "$HTTP_STATUS" =~ ^2[0-9][0-9]$ ]] || {
         die "Management API returned HTTP $HTTP_STATUS" || return 1
     }
-    jq -e . >/dev/null 2>&1 <<<"$HTTP_BODY" || {
+    jq -e -s . >/dev/null 2>&1 <<<"$HTTP_BODY" || {
         die 'Management API returned invalid JSON' || return 1
+    }
+    jq -e -s 'length == 1' >/dev/null 2>&1 <<<"$HTTP_BODY" || {
+        die 'Management API must return a single JSON document' || return 1
     }
 }
 
@@ -401,7 +429,7 @@ fetch_all_quotas() (
             fi
         fi
         printf '[OK] %s (%s)\n' "$name" "$type" >&2
-    done < <(jq -c '.files[]' <<<"$HTTP_BODY")
+    done < <(jq -c '.files[] | select(type == "object")' <<<"$HTTP_BODY")
 
     quotas="$(jq -s '.' "$accounts_file")"
     min_remaining="$(jq -s 'if length == 0 then 1 else min end' "$remaining_file")"
@@ -431,5 +459,8 @@ main() {
 }
 
 if [[ "${QUOTAS_FETCHER_SOURCE_ONLY:-0}" != "1" ]]; then
+    trap cleanup_request_tmp_dir EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     main "$@"
 fi

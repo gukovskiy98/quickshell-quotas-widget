@@ -15,6 +15,7 @@ FALLBACK_CONFIG=""
 CREDENTIAL_BACKEND=""
 declare -a TX_REPLACED_PATHS=()
 declare -a TX_BACKUP_PATHS=()
+declare -a TX_REPLACED_MODES=()
 declare -a TX_CREATED_PATHS=()
 TX_ACTIVE=0
 TX_TIMESTAMP=""
@@ -265,14 +266,15 @@ cleanup_work_dir() {
 begin_transaction() {
     TX_REPLACED_PATHS=()
     TX_BACKUP_PATHS=()
+    TX_REPLACED_MODES=()
     TX_CREATED_PATHS=()
-    TX_TIMESTAMP="${QUOTAS_TIMESTAMP:-$(date +%Y%m%d-%H%M%S)}"
+    TX_TIMESTAMP="${TX_TIMESTAMP:-${QUOTAS_TIMESTAMP:-$(date +%Y%m%d-%H%M%S)}}"
     TX_ROLLING_BACK=0
     TX_ACTIVE=1
 }
 
 backup_changed_file() {
-    local path="$1" backup index
+    local path="$1" backup index original_mode
 
     ((TX_ACTIVE == 1)) || {
         die 'cannot backup a file outside an active transaction' || return 1
@@ -288,11 +290,25 @@ backup_changed_file() {
     [[ ! -e "$backup" ]] || {
         die "backup already exists: $backup" || return 1
     }
-    cp -p -- "$path" "$backup" || {
-        die "cannot backup file: $path" || return 1
+    original_mode="$(stat -c '%a' "$path")" || {
+        die "cannot inspect file mode before backup: $path" || return 1
     }
+    if [[ "${path##*/}" == 'quotas-widget.conf' ]]; then
+        (umask 077; cp --no-preserve=mode -- "$path" "$backup") || {
+            die "cannot backup file: $path" || return 1
+        }
+        chmod 600 "$backup" || {
+            rm -f -- "$backup"
+            die "cannot secure credential backup: $backup" || return 1
+        }
+    else
+        cp -p -- "$path" "$backup" || {
+            die "cannot backup file: $path" || return 1
+        }
+    fi
     TX_REPLACED_PATHS+=("$path")
     TX_BACKUP_PATHS+=("$backup")
+    TX_REPLACED_MODES+=("$original_mode")
 }
 
 track_created_file() {
@@ -314,7 +330,8 @@ rollback_transaction() {
     ((TX_ROLLING_BACK == 0)) || return 1
     TX_ROLLING_BACK=1
     for ((index = ${#TX_REPLACED_PATHS[@]} - 1; index >= 0; index--)); do
-        _restore_file "${TX_BACKUP_PATHS[index]}" "${TX_REPLACED_PATHS[index]}" || status=1
+        _restore_file "${TX_BACKUP_PATHS[index]}" "${TX_REPLACED_PATHS[index]}" \
+            "${TX_REPLACED_MODES[index]}" || status=1
     done
     for ((index = ${#TX_CREATED_PATHS[@]} - 1; index >= 0; index--)); do
         rm -f -- "${TX_CREATED_PATHS[index]}" || status=1
@@ -332,18 +349,20 @@ commit_transaction() {
     TX_ROLLING_BACK=0
     TX_REPLACED_PATHS=()
     TX_BACKUP_PATHS=()
+    TX_REPLACED_MODES=()
     TX_CREATED_PATHS=()
 }
 
 _restore_file() {
-    local backup="$1" destination="$2" tmp_file
+    local backup="$1" destination="$2" mode="$3" tmp_file
 
     [[ -f "$backup" && ! -L "$backup" ]] || return 1
     if [[ -e "$destination" ]]; then
         [[ -f "$destination" && ! -L "$destination" ]] || return 1
     fi
     tmp_file="$(mktemp "$destination.rollback.XXXXXX")" || return 1
-    if ! cp -p -- "$backup" "$tmp_file" || ! mv -fT -- "$tmp_file" "$destination"; then
+    if ! cp -p -- "$backup" "$tmp_file" || ! chmod "$mode" "$tmp_file" \
+        || ! mv -fT -- "$tmp_file" "$destination"; then
         rm -f -- "$tmp_file"
         return 1
     fi
@@ -387,6 +406,89 @@ install_payload() {
     _install_file "$PAYLOAD_DIR/QuotasPopup.qml" "$INSTALL_DIR/QuotasPopup.qml" 644 || return 1
     _install_file "$PAYLOAD_DIR/get-quotas.sh" "$INSTALL_DIR/get-quotas.sh" 700
 }
+
+validate_writable_targets() (
+    local path probe backup_probe current_mode
+    local -a probe_paths=()
+
+    # Invoked indirectly by the EXIT trap below.
+    # shellcheck disable=SC2329
+    cleanup_writable_probes() {
+        ((${#probe_paths[@]} == 0)) || rm -f -- "${probe_paths[@]}"
+    }
+    fail_probe_if_requested() {
+        local stage="$1"
+        [[ "${QUOTAS_WRITABLE_PROBE_FAIL:-}" != "$stage" ]] || {
+            die "writable target probe failed: $stage" || return 1
+        }
+    }
+    probe_target() {
+        local target="$1" stage="$2"
+
+        fail_probe_if_requested "$stage" || return 1
+        if [[ -e "$target" ]]; then
+            [[ -f "$target" && ! -L "$target" ]] || {
+                die "unsafe writable target: $stage" || return 1
+            }
+            current_mode="$(stat -c '%a' "$target")" || {
+                die "cannot inspect writable target: $stage" || return 1
+            }
+            backup_probe="$target.backup.$TX_TIMESTAMP"
+            [[ ! -e "$backup_probe" ]] || {
+                die "backup target already exists: $stage" || return 1
+            }
+            (umask 077; : >"$backup_probe") || {
+                die "cannot create backup probe: $stage" || return 1
+            }
+            probe_paths+=("$backup_probe")
+            if [[ "${target##*/}" == 'quotas-widget.conf' ]]; then
+                cp --no-preserve=mode -- "$target" "$backup_probe" || {
+                    die "cannot write backup probe: $stage" || return 1
+                }
+                chmod 600 "$backup_probe" || {
+                    die "cannot secure backup probe: $stage" || return 1
+                }
+            else
+                cp -p -- "$target" "$backup_probe" || {
+                    die "cannot write backup probe: $stage" || return 1
+                }
+            fi
+        else
+            current_mode=600
+        fi
+        probe="$(mktemp "$target.tmp.probe.XXXXXX")" || {
+            die "cannot create replacement probe: $stage" || return 1
+        }
+        probe_paths+=("$probe")
+        printf 'probe\n' >"$probe" || {
+            die "cannot write replacement probe: $stage" || return 1
+        }
+        chmod "$current_mode" "$probe" || {
+            die "cannot set replacement probe mode: $stage" || return 1
+        }
+        backup_probe="$probe.ready"
+        probe_paths+=("$backup_probe")
+        mv -f -- "$probe" "$backup_probe" || {
+            die "cannot rename replacement probe: $stage" || return 1
+        }
+    }
+
+    trap cleanup_writable_probes EXIT
+    fail_probe_if_requested install-dir || return 1
+    probe="$(mktemp "$INSTALL_DIR/.quotas-writable-probe.XXXXXX")" || {
+        die 'cannot create install-dir writable probe' || return 1
+    }
+    probe_paths+=("$probe")
+    printf 'probe\n' >"$probe" || {
+        die 'cannot write install-dir writable probe' || return 1
+    }
+
+    probe_target "$CONFIG_ROOT/modules/ii/bar/BarContent.qml" bar-content || return 1
+    for path in Quotas.qml QuotasPopup.qml get-quotas.sh; do
+        probe_target "$INSTALL_DIR/$path" payload || return 1
+    done
+    probe_target "$INSTALL_DIR/quotas-widget.conf" fallback
+)
 
 fetch_latest_release() {
     local github_api="${QUOTAS_GITHUB_API_BASE:-https://api.github.com}"
@@ -690,7 +792,7 @@ require_dependencies() {
 
 _qml_braced_block() {
     local content="$1" start_token="$2" after open_offset index depth=0 char next_char
-    local quote='' escaped=0 line_comment=0
+    local quote='' escaped=0 line_comment=0 block_comment=0
 
     [[ "$content" == *"$start_token"* ]] || return 1
     after="${content#*"$start_token"}"
@@ -705,6 +807,13 @@ _qml_braced_block() {
             [[ "$char" != $'\n' ]] || line_comment=0
             continue
         fi
+        if ((block_comment == 1)); then
+            if [[ "$char" == '*' && "$next_char" == '/' ]]; then
+                block_comment=0
+                index=$((index + 1))
+            fi
+            continue
+        fi
         if [[ -n "$quote" ]]; then
             if ((escaped == 1)); then
                 escaped=0
@@ -717,9 +826,15 @@ _qml_braced_block() {
         fi
         if [[ "$char" == '/' && "$next_char" == '/' ]]; then
             line_comment=1
+            index=$((index + 1))
             continue
         fi
-        if [[ "$char" == '"' || "$char" == "'" ]]; then
+        if [[ "$char" == '/' && "$next_char" == '*' ]]; then
+            block_comment=1
+            index=$((index + 1))
+            continue
+        fi
+        if [[ "$char" == '"' || "$char" == "'" || "$char" == '`' ]]; then
             quote="$char"
             continue
         fi
@@ -791,7 +906,7 @@ validate_end4_layout() {
 
 integrate_bar_content() {
     local bar_file="$CONFIG_ROOT/modules/ii/bar/BarContent.qml"
-    local transformed awk_status
+    local transformed awk_status bar_mode
 
     if [[ -z "$WORK_DIR" ]]; then
         WORK_DIR="$(mktemp -d)" || {
@@ -880,6 +995,7 @@ integrate_bar_content() {
             quote = ""
             escaped = 0
             line_comment = 0
+            block_comment = 0
             bar_count = 0
             resource_count = 0
             reset_token_context()
@@ -888,6 +1004,13 @@ integrate_bar_content() {
                 nextc = substr(text, i + 1, 1)
                 if (line_comment) {
                     if (c == "\n") line_comment = 0
+                    continue
+                }
+                if (block_comment) {
+                    if (c == "*" && nextc == "/") {
+                        block_comment = 0
+                        i++
+                    }
                     continue
                 }
                 if (quote != "") {
@@ -902,7 +1025,13 @@ integrate_bar_content() {
                     i++
                     continue
                 }
-                if (c == "\"" || c == sprintf("%c", 39)) {
+                if (c == "/" && nextc == "*") {
+                    flush_token()
+                    block_comment = 1
+                    i++
+                    continue
+                }
+                if (c == "\"" || c == sprintf("%c", 39) || c == sprintf("%c", 96)) {
                     flush_token()
                     quote = c
                     continue
@@ -948,7 +1077,7 @@ integrate_bar_content() {
                 reset_token_context()
             }
             flush_token()
-            if (depth != 0 || quote != "") exit 44
+            if (depth != 0 || quote != "" || block_comment) exit 44
 
             target_count = 0
             for (bar = 1; bar <= bar_count; bar++) {
@@ -1014,7 +1143,10 @@ integrate_bar_content() {
             ;;
     esac
 
-    _install_file "$transformed" "$bar_file" 644
+    bar_mode="$(stat -c '%a' "$bar_file")" || {
+        die 'cannot inspect BarContent.qml mode' || return 1
+    }
+    _install_file "$transformed" "$bar_file" "$bar_mode"
 }
 
 run_smoke_test() {
@@ -1086,6 +1218,8 @@ main() {
     validate_api || return 1
     fetch_latest_release || return 1
     validate_archive || return 1
+    TX_TIMESTAMP="${QUOTAS_TIMESTAMP:-$(date +%Y%m%d-%H%M%S)}"
+    validate_writable_targets || return 1
     begin_transaction || return 1
     store_credentials || {
         rollback_transaction || true

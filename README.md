@@ -43,7 +43,7 @@ curl -fsSL https://raw.githubusercontent.com/gukovskiy98/quickshell-quotas-widge
 
 The installer prompts for the management key through `/dev/tty` with input hidden. The prompt works even though the pipeline uses standard input for the script. The API URL must start with `http://` or `https://`.
 
-Before downloading or changing files, the installer validates the key against `<api-url>/v0/management/auth-files`, validates the local end4-dots layout, and validates the latest GitHub Release archive.
+Before downloading the release, the installer validates the management key and local end4-dots layout. After downloading, it validates the latest GitHub Release archive before making persistent changes.
 
 ### Automation flags and key exposure
 
@@ -93,11 +93,13 @@ Use the same `--api-url`, key-input method, and `--install-dir` value as the ori
 
 After a successful committed installation, the installer checks for a Quickshell instance using this configuration. If one is running, it runs `kill` and then starts it with `--daemonize`. A restart failure is reported as a warning and does not roll back the committed installation.
 
-If automatic restart was skipped or failed, restart manually. Replace `qs` with `quickshell` if that is the executable installed on your system:
+If automatic restart was skipped or failed, restart manually. Set `INSTALL_DIR` to the same bar modules directory used for installation, including a custom `--install-dir`; the configuration root is three parent directories above it. Replace `qs` with `quickshell` if that is the executable installed on your system:
 
 ```bash
-qs -p "${XDG_CONFIG_HOME:-$HOME/.config}/quickshell/ii" kill
-qs -p "${XDG_CONFIG_HOME:-$HOME/.config}/quickshell/ii" --daemonize
+INSTALL_DIR="${INSTALL_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/quickshell/ii/modules/ii/bar}"
+CONFIG_ROOT="$(cd -- "$INSTALL_DIR/../../.." && pwd -P)"
+qs -p "$CONFIG_ROOT" kill
+qs -p "$CONFIG_ROOT" --daemonize
 ```
 
 ### Manual installation or recovery
@@ -111,12 +113,44 @@ install -m 644 Quotas.qml QuotasPopup.qml "$INSTALL_DIR/"
 install -m 700 get-quotas.sh "$INSTALL_DIR/"
 ```
 
-Then ensure credentials exist through Secret Service or a mode-`600` `quotas-widget.conf`, and add this managed block immediately after the `Resources` component inside the single `BarGroup` with `id: leftCenterGroup`:
+Then choose one credential backend. For Secret Service, read the key without echo and pipe values to `secret-tool` so the key is not placed in command arguments:
 
 ```bash
-printf '%s' "https://management.example" | secret-tool store --label="Quotas API URL" application quotas key quotasApiUrl
+(
+set -euo pipefail
+API_URL="https://management.example"
+IFS= read -r -s -p 'Management key: ' MANAGEMENT_KEY
+printf '\n'
+[[ -n "$MANAGEMENT_KEY" ]] || { printf 'Management key must not be empty\n' >&2; exit 1; }
+printf '%s' "${API_URL%/}" | secret-tool store --label="Quotas API URL" application quotas key quotasApiUrl
 printf '%s' "$MANAGEMENT_KEY" | secret-tool store --label="Quotas Management Key" application quotas key quotasManagementKey
+unset MANAGEMENT_KEY
+)
 ```
+
+If Secret Service cannot be used, create the exact plaintext fallback JSON safely. Set `INSTALL_DIR` to the installed bar modules directory. The subshell uses a hidden prompt, restrictive creation permissions, `jq` stdin rather than key arguments, and an atomic final rename:
+
+```bash
+(
+set -euo pipefail
+INSTALL_DIR="${INSTALL_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/quickshell/ii/modules/ii/bar}"
+API_URL="https://management.example"
+IFS= read -r -s -p 'Management key: ' MANAGEMENT_KEY
+printf '\n'
+[[ -n "$MANAGEMENT_KEY" ]] || { printf 'Management key must not be empty\n' >&2; exit 1; }
+umask 077
+tmp_config="$(mktemp "$INSTALL_DIR/quotas-widget.conf.XXXXXX")"
+trap 'rm -f -- "$tmp_config"' EXIT
+printf '%s\0%s' "${API_URL%/}" "$MANAGEMENT_KEY" \
+  | jq -Rs 'split("\u0000") | {apiUrl:.[0], managementKey:.[1]}' >"$tmp_config"
+chmod 600 "$tmp_config"
+mv -f -- "$tmp_config" "$INSTALL_DIR/quotas-widget.conf"
+trap - EXIT
+unset MANAGEMENT_KEY
+)
+```
+
+Finally, add this managed block immediately after the `Resources` component inside the single `BarGroup` with `id: leftCenterGroup`:
 
 ```qml
 // quickshell-quotas-widget:start
@@ -186,7 +220,7 @@ curl -fsSL https://raw.githubusercontent.com/gukovskiy98/quickshell-quotas-widge
 
 Установщик запрашивает ключ управления через `/dev/tty` и скрывает ввод. Запрос работает, даже когда стандартный ввод занят конвейером со скриптом. URL API должен начинаться с `http://` или `https://`.
 
-До загрузки или изменения файлов установщик проверяет ключ через `<api-url>/v0/management/auth-files`, локальную структуру end4-dots и архив последнего GitHub Release.
+До загрузки релиза установщик проверяет ключ управления через `<api-url>/v0/management/auth-files` и локальную структуру end4-dots. После загрузки установщик проверяет архив до постоянных изменений.
 
 ### Флаги автоматизации и раскрытие ключа
 
@@ -236,11 +270,13 @@ printf '%s\n' "$MANAGEMENT_KEY" | ./install.sh --api-url "https://management.exa
 
 После успешной фиксации установки установщик проверяет экземпляр Quickshell с этой конфигурацией. Если он запущен, установщик выполняет `kill`, а затем запускает его с `--daemonize`. Ошибка перезапуска выводится как предупреждение и не откатывает уже зафиксированную установку.
 
-Если автоматический перезапуск пропущен или завершился ошибкой, перезапустите Quickshell вручную. Замените `qs` на `quickshell`, если в вашей системе установлен исполняемый файл с этим именем:
+Если автоматический перезапуск пропущен или завершился ошибкой, перезапустите Quickshell вручную. Задайте `INSTALL_DIR` равным тому же каталогу модулей панели, который использовался при установке, включая пользовательский `--install-dir`; корень конфигурации находится на три каталога выше. Замените `qs` на `quickshell`, если в вашей системе установлен исполняемый файл с этим именем:
 
 ```bash
-qs -p "${XDG_CONFIG_HOME:-$HOME/.config}/quickshell/ii" kill
-qs -p "${XDG_CONFIG_HOME:-$HOME/.config}/quickshell/ii" --daemonize
+INSTALL_DIR="${INSTALL_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/quickshell/ii/modules/ii/bar}"
+CONFIG_ROOT="$(cd -- "$INSTALL_DIR/../../.." && pwd -P)"
+qs -p "$CONFIG_ROOT" kill
+qs -p "$CONFIG_ROOT" --daemonize
 ```
 
 ### Ручная установка или восстановление
@@ -254,12 +290,44 @@ install -m 644 Quotas.qml QuotasPopup.qml "$INSTALL_DIR/"
 install -m 700 get-quotas.sh "$INSTALL_DIR/"
 ```
 
-Затем настройте учетные данные в Secret Service или файле `quotas-widget.conf` с правами `600` и добавьте следующий управляемый блок сразу после компонента `Resources` внутри единственного `BarGroup` с `id: leftCenterGroup`:
+Затем выберите одно хранилище учетных данных. Для Secret Service прочитайте ключ без отображения и передайте значения в `secret-tool` через конвейер, чтобы ключ не попал в аргументы команд:
 
 ```bash
-printf '%s' "https://management.example" | secret-tool store --label="Quotas API URL" application quotas key quotasApiUrl
+(
+set -euo pipefail
+API_URL="https://management.example"
+IFS= read -r -s -p 'Management key: ' MANAGEMENT_KEY
+printf '\n'
+[[ -n "$MANAGEMENT_KEY" ]] || { printf 'Management key must not be empty\n' >&2; exit 1; }
+printf '%s' "${API_URL%/}" | secret-tool store --label="Quotas API URL" application quotas key quotasApiUrl
 printf '%s' "$MANAGEMENT_KEY" | secret-tool store --label="Quotas Management Key" application quotas key quotasManagementKey
+unset MANAGEMENT_KEY
+)
 ```
+
+Если Secret Service использовать нельзя, безопасно создайте резервный JSON-файл с открытыми учетными данными. Задайте `INSTALL_DIR` равным каталогу установленных модулей панели. Команды ниже используют скрытый ввод, ограниченные права при создании, стандартный ввод `jq` вместо аргументов с ключом и атомарное окончательное переименование:
+
+```bash
+(
+set -euo pipefail
+INSTALL_DIR="${INSTALL_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/quickshell/ii/modules/ii/bar}"
+API_URL="https://management.example"
+IFS= read -r -s -p 'Management key: ' MANAGEMENT_KEY
+printf '\n'
+[[ -n "$MANAGEMENT_KEY" ]] || { printf 'Management key must not be empty\n' >&2; exit 1; }
+umask 077
+tmp_config="$(mktemp "$INSTALL_DIR/quotas-widget.conf.XXXXXX")"
+trap 'rm -f -- "$tmp_config"' EXIT
+printf '%s\0%s' "${API_URL%/}" "$MANAGEMENT_KEY" \
+  | jq -Rs 'split("\u0000") | {apiUrl:.[0], managementKey:.[1]}' >"$tmp_config"
+chmod 600 "$tmp_config"
+mv -f -- "$tmp_config" "$INSTALL_DIR/quotas-widget.conf"
+trap - EXIT
+unset MANAGEMENT_KEY
+)
+```
+
+После этого добавьте следующий управляемый блок сразу после компонента `Resources` внутри единственного `BarGroup` с `id: leftCenterGroup`:
 
 ```qml
 // quickshell-quotas-widget:start

@@ -384,19 +384,35 @@ store_keyring_credentials() {
 }
 
 write_fallback_config() {
-    local tmp_config
+    local credential_input tmp_config
 
     mkdir -p -- "$INSTALL_DIR" || {
         die 'cannot create credential configuration directory' || return 1
     }
+    credential_input="$(mktemp "$WORK_DIR/credentials.XXXXXX")" || {
+        die 'cannot create temporary credential input' || return 1
+    }
+    chmod 600 "$credential_input" || {
+        rm -f -- "$credential_input"
+        die 'cannot secure temporary credential input' || return 1
+    }
+    printf '%s\0%s' "$API_URL" "$MANAGEMENT_KEY" >"$credential_input" || {
+        rm -f -- "$credential_input"
+        die 'cannot write temporary credential input' || return 1
+    }
     tmp_config="$(mktemp "$INSTALL_DIR/quotas-widget.conf.XXXXXX")" || {
+        rm -f -- "$credential_input"
         die 'cannot create temporary credential configuration' || return 1
     }
-    if ! jq -n --arg apiUrl "$API_URL" --arg managementKey "$MANAGEMENT_KEY" \
-        '{apiUrl:$apiUrl, managementKey:$managementKey}' >"$tmp_config"; then
-        rm -f -- "$tmp_config"
+    if ! jq -Rs 'split("\u0000") | {apiUrl:.[0], managementKey:.[1]}' \
+        <"$credential_input" >"$tmp_config"; then
+        rm -f -- "$credential_input" "$tmp_config"
         die 'cannot write credential fallback configuration' || return 1
     fi
+    rm -f -- "$credential_input" || {
+        rm -f -- "$tmp_config"
+        die 'cannot remove temporary credential input' || return 1
+    }
     chmod 600 "$tmp_config" || {
         rm -f -- "$tmp_config"
         die 'cannot secure credential fallback configuration' || return 1

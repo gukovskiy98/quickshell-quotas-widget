@@ -6,6 +6,7 @@ source "$repo_root/tests/test_helper.bash"
 QUOTAS_INSTALLER_SOURCE_ONLY=1 source "$repo_root/install.sh"
 
 CURL_MOCK="$repo_root/tests/helpers/mock_curl.sh"
+JQ_MOCK="$repo_root/tests/helpers/mock_jq.sh"
 
 reset_installer_state() {
     API_URL=""
@@ -766,6 +767,35 @@ test_preserves_special_characters_in_fallback_json() {
         "$INSTALL_DIR/quotas-widget.conf" >/dev/null
 }
 
+test_keeps_credentials_out_of_jq_argv() {
+    prepare_installer_fixture
+    local jq_argv jq_bin_dir="$TEST_TMP_ROOT/jq-bin"
+    API_URL='https://management.example/path with spaces'
+    MANAGEMENT_KEY=$'argv-secret-"-\\-with spaces\nand-newline'
+    QUOTAS_SECRET_TOOL_BIN="$TEST_TMP_ROOT/missing-secret-tool"
+    MOCK_JQ_ARGV_LOG="$TEST_TMP_ROOT/jq-argv.log"
+    MOCK_JQ_STDIN_MODE_LOG="$TEST_TMP_ROOT/jq-stdin-mode.log"
+    MOCK_JQ_STDIN_PATH_LOG="$TEST_TMP_ROOT/jq-stdin-path.log"
+    REAL_JQ_BIN="$(command -v jq)"
+    mkdir -p "$jq_bin_dir"
+    cp "$JQ_MOCK" "$jq_bin_dir/jq"
+    chmod +x "$jq_bin_dir/jq"
+    export MOCK_JQ_ARGV_LOG MOCK_JQ_STDIN_MODE_LOG MOCK_JQ_STDIN_PATH_LOG REAL_JQ_BIN
+
+    PATH="$jq_bin_dir:$PATH" store_credentials || return 1
+
+    jq_argv="$(tr '\0' '\n' <"$MOCK_JQ_ARGV_LOG")"
+    [[ "$jq_argv" != *"$API_URL"* ]] || fail 'API URL leaked into jq arguments' || return 1
+    [[ "$jq_argv" != *"$MANAGEMENT_KEY"* ]] || fail 'management key leaked into jq arguments' || return 1
+    assert_eq '600' "$(<"$MOCK_JQ_STDIN_MODE_LOG")" || return 1
+    [[ "$(<"$MOCK_JQ_STDIN_PATH_LOG")" == "$WORK_DIR/"* ]] || fail 'jq input must be owned by WORK_DIR cleanup' || return 1
+    jq -e --arg url "$API_URL" --arg key "$MANAGEMENT_KEY" \
+        '.apiUrl == $url and .managementKey == $key' \
+        "$FALLBACK_CONFIG" >/dev/null || return 1
+    assert_file_mode 600 "$FALLBACK_CONFIG" || return 1
+    [[ -z "$(find "$WORK_DIR" -maxdepth 1 -type f -print -quit)" ]] || fail 'credential input must be removed after fallback write'
+}
+
 test_never_logs_management_key() {
     prepare_installer_fixture
     local output
@@ -874,6 +904,7 @@ run_test 'falls back after keyring lookup mismatch' test_falls_back_after_keyrin
 run_test 'falls back after partial keyring write' test_falls_back_after_partial_keyring_write
 run_test 'removes existing fallback after keyring success' test_removes_existing_fallback_after_keyring_success
 run_test 'preserves special characters in fallback JSON' test_preserves_special_characters_in_fallback_json
+run_test 'keeps credentials out of jq arguments' test_keeps_credentials_out_of_jq_argv
 run_test 'never logs management key while storing credentials' test_never_logs_management_key
 run_test 'fallback warning is bilingual' test_fallback_warning_is_bilingual
 run_test 'main stores credentials after API validation' test_main_stores_credentials_after_api_validation

@@ -430,17 +430,17 @@ test_rejects_missing_resources() {
 }
 
 assert_missing_dependency() {
-    local missing="$1"
+    local command_name="$1"
     prepare_required_commands
-    rm "$TEST_TMP_ROOT/bin/$missing"
+    rm "$TEST_TMP_ROOT/bin/$command_name"
     reset_installer_state
     local output status
     set +e
     output="$(PATH="$TEST_TMP_ROOT/bin" require_dependencies 2>&1)"
     status=$?
     set -e
-    [[ $status -ne 0 ]] || fail "missing $missing must fail" || return 1
-    assert_contains "$output" "$missing" || return 1
+    [[ $status -ne 0 ]] || fail "missing $command_name must fail" || return 1
+    assert_contains "$output" "$command_name" || return 1
 }
 
 test_reports_missing_hyprctl() {
@@ -639,6 +639,28 @@ test_release_package_matches_archive_contract() {
     assert_eq $'Quotas.qml\nQuotasPopup.qml\nget-quotas.sh' "$(tar -tzf "$ARCHIVE_PATH")"
 }
 
+test_release_package_is_reproducible_across_filesystem_metadata() {
+    local first_root="$TEST_TMP_ROOT/first" second_root="$TEST_TMP_ROOT/second" payload
+
+    for payload in Quotas.qml QuotasPopup.qml get-quotas.sh; do
+        mkdir -p "$first_root/scripts" "$second_root/scripts"
+        cp "$repo_root/$payload" "$first_root/$payload"
+        cp "$repo_root/$payload" "$second_root/$payload"
+    done
+    cp "$repo_root/scripts/package-release.sh" "$first_root/scripts/package-release.sh"
+    cp "$repo_root/scripts/package-release.sh" "$second_root/scripts/package-release.sh"
+    touch -t 202001010101 "$first_root" "$first_root/scripts" "$first_root"/*.*
+    touch -t 203001010101 "$second_root" "$second_root/scripts" "$second_root"/*.*
+
+    bash "$first_root/scripts/package-release.sh" v1.0.0 "$TEST_TMP_ROOT/first-dist" || return 1
+    bash "$second_root/scripts/package-release.sh" v1.0.0 "$TEST_TMP_ROOT/second-dist" || return 1
+
+    cmp -s \
+        "$TEST_TMP_ROOT/first-dist/quickshell-quotas-widget-v1.0.0.tar.gz" \
+        "$TEST_TMP_ROOT/second-dist/quickshell-quotas-widget-v1.0.0.tar.gz" \
+        || fail 'equivalent payloads with different filesystem metadata must produce identical archives'
+}
+
 test_validate_archive_rejects_parent_entry() {
     prepare_remote_fixture
     local source_dir="$TEST_TMP_ROOT/archive-source"
@@ -748,6 +770,8 @@ test_validate_archive_rejects_fifo() {
     assert_remote_failure 'regular files' validate_archive
 }
 
+# The generated tar mock must retain its shell expressions literally.
+# shellcheck disable=SC2016
 test_validate_archive_stops_when_verbose_listing_fails() {
     prepare_remote_fixture
     create_release_archive "$TEST_TMP_ROOT/release.tar.gz"
@@ -1409,8 +1433,7 @@ test_smoke_rejects_nonstring_timestamp() {
 test_restart_warns_when_no_process_is_running() {
     prepare_end4_fixture
     make_qs_mock
-    MOCK_QS_LIST_JSON='[]'
-    export MOCK_QS_LIST_JSON
+    export MOCK_QS_LIST_JSON='[]'
     local output
 
     output="$(restart_quickshell 2>&1)" || return 1
@@ -1421,8 +1444,7 @@ test_restart_warns_when_no_process_is_running() {
 test_restart_kills_and_daemonizes_running_process() {
     prepare_end4_fixture
     make_qs_mock
-    MOCK_QS_LIST_JSON='[{"name":"ii"}]'
-    export MOCK_QS_LIST_JSON
+    export MOCK_QS_LIST_JSON='[{"name":"ii"}]'
 
     restart_quickshell || return 1
     assert_eq "$CONFIG_ROOT list --json" "$(sed -n 's/^-p //p' "$MOCK_QS_LOG" | sed -n '1p')" || return 1
@@ -1433,9 +1455,9 @@ test_restart_kills_and_daemonizes_running_process() {
 test_restart_failure_after_commit_does_not_roll_back() {
     prepare_transaction_fixture
     make_qs_mock
-    MOCK_QS_LIST_JSON='[{"name":"ii"}]'
+    export MOCK_QS_LIST_JSON='[{"name":"ii"}]'
     MOCK_QS_KILL_EXIT=9
-    export MOCK_QS_LIST_JSON MOCK_QS_KILL_EXIT
+    export MOCK_QS_KILL_EXIT
     printf 'old quotas qml\n' >"$INSTALL_DIR/Quotas.qml"
 
     begin_transaction || return 1
@@ -1549,6 +1571,7 @@ run_test 'API temporary files are owned by global cleanup' test_api_temporary_fi
 run_test 'latest release rejects missing asset' test_fetch_latest_release_rejects_missing_asset
 run_test 'latest release rejects duplicate assets' test_fetch_latest_release_rejects_duplicate_assets
 run_test 'release package matches archive contract' test_release_package_matches_archive_contract
+run_test 'release package is reproducible across filesystem metadata' test_release_package_is_reproducible_across_filesystem_metadata
 run_test 'archive rejects parent entry' test_validate_archive_rejects_parent_entry
 run_test 'archive rejects absolute entry' test_validate_archive_rejects_absolute_entry
 run_test 'archive rejects missing payload file' test_validate_archive_rejects_missing_payload_file

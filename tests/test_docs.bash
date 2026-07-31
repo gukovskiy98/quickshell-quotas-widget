@@ -45,6 +45,8 @@ test_documents_public_installer_and_cli() {
     assert_contains "$content" 'bar modules directory'
 }
 
+# Markdown code spans are asserted literally, not evaluated by this test shell.
+# shellcheck disable=SC2016
 test_documents_dependencies_and_credentials() {
     local content
     read_readme
@@ -61,6 +63,8 @@ test_documents_dependencies_and_credentials() {
     assert_contains "$content" 'mode `600`'
 }
 
+# Installer commands are asserted as literal README snippets.
+# shellcheck disable=SC2016
 test_documents_updates_restart_and_recovery() {
     local content
     read_readme
@@ -74,6 +78,8 @@ test_documents_updates_restart_and_recovery() {
     assert_contains "$content" 'automatically rolls back'
 }
 
+# Recovery commands are asserted as literal README snippets.
+# shellcheck disable=SC2016
 test_documents_safe_plaintext_recovery() {
     local content
     read_readme
@@ -153,6 +159,8 @@ round3_russian_contract_anchors() {
     decode_utf8_hex 'd09fd183d0b1d0bbd0b8d187d0bdd18bd0b920d183d181d182d0b0d0bdd0bed0b2d189d0b8d0ba20d0b7d0b0d0bfd180d0b0d188d0b8d0b2d0b0d0b5d18220d0bfd0bed181d0bbd0b5d0b4d0bdd0b8d0b9204769744875622052656c6561736520d0b820d0bed182d0bad0bbd0bed0bdd18fd0b5d18220d0bed182d181d183d182d181d182d0b2d183d18ed189d0b8d0b52c20d0b4d183d0b1d0bbd0b8d180d183d18ed189d0b8d0b5d181d18f2c20d0b2d0bbd0bed0b6d0b5d0bdd0bdd18bd0b52c20d0bbd0b8d188d0bdd0b8d0b520d0b8d0bbd0b820d0bdd0b5d0b1d0b5d0b7d0bed0bfd0b0d181d0bdd18bd0b520d18dd0bbd0b5d0bcd0b5d0bdd182d18b20d0b0d180d185d0b8d0b2d0b02e'; printf '\n'
 }
 
+# Contract anchors intentionally include literal command substitutions and code spans.
+# shellcheck disable=SC2016
 russian_contract_anchors() {
     russian_section_headings
     decode_utf8_hex 'd0add182d0be20d0bdd0b520d183d0bdd0b8d0b2d0b5d180d181d0b0d0bbd18cd0bdd18bd0b920d183d181d182d0b0d0bdd0bed0b2d189d0b8d0ba'; printf '\n'

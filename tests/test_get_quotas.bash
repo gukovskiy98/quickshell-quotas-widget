@@ -102,6 +102,8 @@ test_assert_fetcher_failure_preserves_errexit_state() {
     [[ "$-" != *e* ]] || fail 'assert_fetcher_fails_with enabled errexit'
 }
 
+# The management key is deliberately an inert command-substitution string.
+# shellcheck disable=SC2016
 test_reads_fallback_json_without_eval() {
     prepare_fetcher
     rm -f /tmp/must-not-run
@@ -271,6 +273,9 @@ test_formats_production_time_with_runtime_bullet() {
 
 test_exposes_source_only_interface() {
     prepare_fetcher
+    # FETCHER is the repository get-quotas.sh path configured above.
+    # shellcheck source=../get-quotas.sh
+    # shellcheck disable=SC1091
     QUOTAS_FETCHER_SOURCE_ONLY=1 QUOTAS_CONFIG_PATH="$QUOTAS_CONFIG_PATH" source "$FETCHER"
 
     declare -F \
@@ -447,6 +452,8 @@ test_formats_percentages_with_dot_under_comma_locale() {
     ' <<<"$output" >/dev/null
 }
 
+# Generated helper scripts and bash -c input must retain their shell expressions literally.
+# shellcheck disable=SC2016
 test_cleans_aggregation_temp_files_after_unexpected_failure() {
     prepare_fetcher
     mkdir -p "$TEST_TMP_ROOT/bin"
@@ -564,20 +571,29 @@ test_logs_unsupported_provider() {
 }
 
 test_formats_epoch_seconds_reset() {
+    # FETCHER is the repository get-quotas.sh path configured above.
+    # shellcheck source=../get-quotas.sh
+    # shellcheck disable=SC1091
     QUOTAS_FETCHER_SOURCE_ONLY=1 source "$FETCHER"
-    QUOTAS_EPOCH_NOW=1893369600
+    export QUOTAS_EPOCH_NOW=1893369600
     assert_eq '1 day, 0 hours' "$(format_refresh_in 1893456000)"
 }
 
 test_formats_epoch_milliseconds_reset() {
+    # FETCHER is the repository get-quotas.sh path configured above.
+    # shellcheck source=../get-quotas.sh
+    # shellcheck disable=SC1091
     QUOTAS_FETCHER_SOURCE_ONLY=1 source "$FETCHER"
-    QUOTAS_EPOCH_NOW=1893369600
+    export QUOTAS_EPOCH_NOW=1893369600
     assert_eq '1 day, 0 hours' "$(format_refresh_in 1893456000000)"
 }
 
 test_formats_iso_reset() {
+    # FETCHER is the repository get-quotas.sh path configured above.
+    # shellcheck source=../get-quotas.sh
+    # shellcheck disable=SC1091
     QUOTAS_FETCHER_SOURCE_ONLY=1 source "$FETCHER"
-    QUOTAS_EPOCH_NOW=1893369600
+    export QUOTAS_EPOCH_NOW=1893369600
     assert_eq '1 day, 0 hours' "$(format_refresh_in '2030-01-01T00:00:00Z')"
 }
 

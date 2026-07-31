@@ -373,10 +373,10 @@ _install_file() {
     tmp_file="$(mktemp "$destination.tmp.XXXXXX")" || {
         die "cannot create temporary installation file for: $destination" || return 1
     }
-    cp -- "$source" "$tmp_file" && chmod "$mode" "$tmp_file" && mv -f -- "$tmp_file" "$destination" || {
+    if ! cp -- "$source" "$tmp_file" || ! chmod "$mode" "$tmp_file" || ! mv -f -- "$tmp_file" "$destination"; then
         rm -f -- "$tmp_file"
         die "cannot install file: $destination" || return 1
-    }
+    fi
 }
 
 install_payload() {
@@ -505,11 +505,11 @@ store_keyring_credentials() {
         --label='Quotas Management Key' application quotas key quotasManagementKey || return 1
     if stored_api_url="$("$secret_tool" lookup application quotas key quotasApiUrl && printf '%s' "$sentinel")"; then
         api_lookup_ok=1
-        stored_api_url="${stored_api_url%$sentinel}"
+        stored_api_url="${stored_api_url%"$sentinel"}"
     fi
     if stored_management_key="$("$secret_tool" lookup application quotas key quotasManagementKey && printf '%s' "$sentinel")"; then
         key_lookup_ok=1
-        stored_management_key="${stored_management_key%$sentinel}"
+        stored_management_key="${stored_management_key%"$sentinel"}"
     fi
     ((api_lookup_ok == 1 && key_lookup_ok == 1)) || return 1
     [[ "$stored_api_url" == "$API_URL" && "$stored_management_key" == "$MANAGEMENT_KEY" ]]
@@ -708,7 +708,7 @@ _qml_braced_block() {
         if [[ -n "$quote" ]]; then
             if ((escaped == 1)); then
                 escaped=0
-            elif [[ "$char" == '\\' ]]; then
+            elif [[ "$char" == $'\\' ]]; then
                 escaped=1
             elif [[ "$char" == "$quote" ]]; then
                 quote=''

@@ -270,7 +270,7 @@ build_codex_account() {
         return 0
     fi
     reset_time="$(format_refresh_in "$(jq -r '.rate_limit.primary_window.reset_at // empty' <<<"$quota_json")")"
-    printf -v percentage '%.2f%%' "$(jq -nr --argjson remaining "$remaining" '$remaining * 100')"
+    LC_NUMERIC=C printf -v percentage '%.2f%%' "$(jq -nr --argjson remaining "$remaining" '$remaining * 100')"
     QUOTA_ACCOUNT="$(jq -cn \
         --arg name "$name" \
         --arg resetTime "$reset_time" \
@@ -301,13 +301,16 @@ build_antigravity_account() {
           | [$group.buckets[]?
               | select(.remainingFraction | type == "number")
               | {
-                  label: (.displayName // .bucketId),
+                  label: ((.displayName | select(type == "string" and length > 0)) // .bucketId),
                   remaining: .remainingFraction,
                   resetValue: (.resetTime // null)
                 }
             ] as $items
           | select(($items | length) > 0)
-          | {name: ($group.displayName // "Limits"), items: $items}
+          | {
+              name: (($group.displayName | select(type == "string" and length > 0)) // "Limits"),
+              items: $items
+            }
         ]
     ' <<<"$quota_json")"
 
@@ -317,7 +320,7 @@ build_antigravity_account() {
     local group_index item_index remaining reset_value reset_text percentage
     while IFS=$'\t' read -r group_index item_index remaining reset_value; do
         reset_text="$(format_refresh_in "$reset_value")"
-        printf -v percentage '%.2f%%' "$(jq -nr --argjson remaining "$remaining" '$remaining * 100')"
+        LC_NUMERIC=C printf -v percentage '%.2f%%' "$(jq -nr --argjson remaining "$remaining" '$remaining * 100')"
         QUOTA_ACCOUNT="$(jq -c \
             --argjson groupIndex "$group_index" \
             --argjson itemIndex "$item_index" \
@@ -336,9 +339,13 @@ build_antigravity_account() {
     QUOTA_ACCOUNT="$(jq -c '.groups |= map(.items |= map(del(.remaining, .resetValue)))' <<<"$QUOTA_ACCOUNT")"
 }
 
-fetch_all_quotas() {
+fetch_all_quotas() (
     local accounts_file remaining_file file_json type auth_index name
     local last_updated timestamp quotas min_remaining avg_remaining
+
+    accounts_file=""
+    remaining_file=""
+    trap '[[ -z "$accounts_file" ]] || rm -f -- "$accounts_file"; [[ -z "$remaining_file" ]] || rm -f -- "$remaining_file"' EXIT
 
     accounts_file="$(mktemp)" || {
         die 'cannot create temporary account file' || return 1
@@ -400,6 +407,8 @@ fetch_all_quotas() {
     min_remaining="$(jq -s 'if length == 0 then 1 else min end' "$remaining_file")"
     avg_remaining="$(jq -s 'if length == 0 then 1 else add / length end' "$remaining_file")"
     rm -f -- "$accounts_file" "$remaining_file"
+    accounts_file=""
+    remaining_file=""
 
     last_updated="${QUOTAS_NOW:-}"
     if [[ -z "$last_updated" ]]; then
@@ -412,7 +421,7 @@ fetch_all_quotas() {
         --argjson avgRemaining "$avg_remaining" \
         --arg lastUpdated "$last_updated" \
         '{quotas: $quotas, minRemaining: $minRemaining, avgRemaining: $avgRemaining, lastUpdated: $lastUpdated}'
-}
+)
 
 main() {
     load_credentials || return 1

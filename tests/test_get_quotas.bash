@@ -430,6 +430,63 @@ test_accepts_object_wrapper_body() {
     jq -e '.quotas[0].groups[0].items[0].val == "60.00%"' <<<"$output" >/dev/null
 }
 
+test_formats_percentages_with_dot_under_comma_locale() {
+    prepare_fetcher
+    write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
+    queue_http_text 200 '{"files":[{"name":"codex.json","type":"codex","auth_index":11},{"name":"antigravity.json","type":"antigravity","auth_index":22,"project_id":"project-direct"}]}'
+    queue_http 200 "$FIXTURES/api/codex-response.json"
+    queue_http 200 "$FIXTURES/api/antigravity-response.json"
+
+    local output
+    output="$(LC_NUMERIC=ru_RU.utf8 run_fetcher)" || return 1
+
+    jq -e '
+      .quotas[0].groups[0].items[0].val == "75.00%" and
+      .quotas[1].groups[0].items[0].val == "60.00%" and
+      .quotas[1].groups[0].items[1].val == "20.00%"
+    ' <<<"$output" >/dev/null
+}
+
+test_cleans_aggregation_temp_files_after_unexpected_failure() {
+    prepare_fetcher
+    mkdir -p "$TEST_TMP_ROOT/bin"
+    printf '#!/usr/bin/env bash\nset -euo pipefail\ncounter_file=%q\ncounter=0\n[[ ! -f "$counter_file" ]] || counter="$(<"$counter_file")"\ncounter=$((counter + 1))\nprintf '\''%%s\\n'\'' "$counter" >"$counter_file"\npath=%q/mktemp-$counter\n: >"$path"\nprintf '\''%%s\\n'\'' "$path"\n' \
+        "$TEST_TMP_ROOT/mktemp-counter" "$TEST_TMP_ROOT" >"$TEST_TMP_ROOT/bin/mktemp"
+    printf '#!/usr/bin/env bash\nset -euo pipefail\nfor arg in "$@"; do\n    [[ "$arg" != "-s" ]] || exit 23\ndone\nexec /usr/bin/jq "$@"\n' >"$TEST_TMP_ROOT/bin/jq"
+    chmod +x "$TEST_TMP_ROOT/bin/mktemp" "$TEST_TMP_ROOT/bin/jq"
+
+    local status
+    if env PATH="$TEST_TMP_ROOT/bin:$PATH" \
+            QUOTAS_FETCHER_SOURCE_ONLY=1 \
+            QUOTAS_NOW='12:34 fixed' \
+            bash -c 'source "$1"; HTTP_BODY='\''{"files":[]}'\''; fetch_all_quotas' _ "$FETCHER" \
+            >/dev/null 2>&1; then
+        status=0
+    else
+        status=$?
+    fi
+
+    [[ $status -ne 0 ]] || fail 'forced aggregation failure must fail the fetcher' || return 1
+    assert_eq '2' "$(<"$TEST_TMP_ROOT/mktemp-counter")" || return 1
+    [[ ! -e "$TEST_TMP_ROOT/mktemp-1" ]] || fail 'account aggregation temp file remained after failure' || return 1
+    [[ ! -e "$TEST_TMP_ROOT/mktemp-2" ]] || fail 'remaining-fraction temp file remained after failure'
+}
+
+test_falls_back_from_empty_antigravity_display_names() {
+    prepare_fetcher
+    write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
+    queue_http_text 200 '{"files":[{"name":"unnamed-limits.json","type":"antigravity","auth_index":22,"project_id":"project-direct"}]}'
+    queue_http_text 200 '{"status_code":200,"body":{"groups":[{"displayName":"","buckets":[{"bucketId":"fallback-bucket","displayName":"","remainingFraction":0.5}]}]}}'
+
+    local output
+    output="$(run_fetcher)" || return 1
+
+    jq -e '
+      .quotas[0].groups[0].name == "Limits" and
+      .quotas[0].groups[0].items[0].label == "fallback-bucket"
+    ' <<<"$output" >/dev/null
+}
+
 test_keeps_antigravity_account_without_displayable_groups() {
     prepare_fetcher
     write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
@@ -552,6 +609,9 @@ run_test 'downloads Antigravity auth file for project ID' test_downloads_antigra
 run_test 'rejects upstream error status' test_rejects_upstream_error_status
 run_test 'accepts string wrapper body' test_accepts_string_wrapper_body
 run_test 'accepts object wrapper body' test_accepts_object_wrapper_body
+run_test 'formats percentages with dot under comma locale' test_formats_percentages_with_dot_under_comma_locale
+run_test 'cleans aggregation temp files after unexpected failure' test_cleans_aggregation_temp_files_after_unexpected_failure
+run_test 'falls back from empty Antigravity display names' test_falls_back_from_empty_antigravity_display_names
 run_test 'keeps Antigravity account without displayable groups' test_keeps_antigravity_account_without_displayable_groups
 run_test 'returns partial result after account failure' test_returns_partial_result_after_account_failure
 run_test 'computes global average from displayed limits' test_computes_global_average_from_displayed_limits

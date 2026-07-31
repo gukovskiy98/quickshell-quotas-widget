@@ -67,7 +67,7 @@ It verifies:
 - Bash 4 or newer.
 - `hyprctl` is available.
 - `quickshell` or `qs` is available.
-- `curl` and `jq` are available.
+- `curl`, `jq`, and `tar` are available.
 - The selected installation directory and its parent are writable or creatable.
 - `BarContent.qml` exists at the selected destination.
 - The corresponding end4-dots `shell.qml` exists.
@@ -206,7 +206,7 @@ Rollback does not remove keyring values. It restores a pre-existing fallback con
 
 ## Quota Fetcher
 
-`get-quotas.sh` replaces `get-quotas.ts` and requires Bash 4+, `curl`, and `jq`.
+`get-quotas.sh` replaces `get-quotas.ts` and requires Bash 4+, `curl`, and `jq`. `tar` is required only by the installer to unpack release archives.
 
 It determines its own directory from `BASH_SOURCE`, so it does not depend on `$HOME`, a username, Bun, Node.js, or the current working directory.
 
@@ -267,7 +267,7 @@ An active Hyprland or Quickshell session is never required to install.
 
 Fatal errors include:
 
-- Missing Hyprland, Quickshell, Bash 4+, `curl`, or `jq`.
+- Missing Hyprland, Quickshell, Bash 4+, `curl`, `jq`, or `tar`.
 - Missing or incompatible end4-dots files.
 - Invalid arguments or API URL.
 - Unreachable API, rejected credentials, invalid API JSON, or an invalid auth-files schema.

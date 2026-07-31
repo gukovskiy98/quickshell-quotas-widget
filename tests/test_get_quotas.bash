@@ -61,14 +61,45 @@ run_fetcher() {
         bash "$FETCHER"
 }
 
+run_fetcher_without_now() {
+    env \
+        PATH="$TEST_TMP_ROOT/bin:$PATH" \
+        QUOTAS_CONFIG_PATH="$QUOTAS_CONFIG_PATH" \
+        QUOTAS_CURL_BIN="$CURL_MOCK" \
+        QUOTAS_SECRET_TOOL_BIN="$SECRET_MOCK" \
+        MOCK_CURL_QUEUE_DIR="$MOCK_CURL_QUEUE_DIR" \
+        MOCK_CURL_LOG="$MOCK_CURL_LOG" \
+        MOCK_CURL_HEADERS_LOG="$MOCK_CURL_HEADERS_LOG" \
+        MOCK_SECRET_STORE_DIR="$MOCK_SECRET_STORE_DIR" \
+        MOCK_SECRET_FAIL_STORE="${MOCK_SECRET_FAIL_STORE:-0}" \
+        MOCK_SECRET_FAIL_LOOKUP="${MOCK_SECRET_FAIL_LOOKUP:-0}" \
+        MOCK_CURL_EXIT_CODE="${MOCK_CURL_EXIT_CODE:-0}" \
+        bash "$FETCHER"
+}
+
 assert_fetcher_fails_with() {
     local expected="$1" output status
-    set +e
-    output="$(run_fetcher 2>&1)"
-    status=$?
-    set -e
+    if output="$(run_fetcher 2>&1)"; then
+        status=0
+    else
+        status=$?
+    fi
     [[ $status -ne 0 ]] || fail 'fetcher must fail' || return 1
     assert_contains "$output" "$expected"
+}
+
+assert_single_json_document() {
+    jq -e -s 'length == 1' "$1" >/dev/null
+}
+
+test_assert_fetcher_failure_preserves_errexit_state() {
+    prepare_fetcher
+    write_config '{invalid'
+    [[ "$-" != *e* ]] || fail 'test requires errexit to start disabled' || return 1
+
+    assert_fetcher_fails_with 'invalid fallback configuration' || return 1
+
+    [[ "$-" != *e* ]] || fail 'assert_fetcher_fails_with enabled errexit'
 }
 
 test_reads_fallback_json_without_eval() {
@@ -130,16 +161,25 @@ test_rejects_absent_secret_service_without_fallback() {
     prepare_fetcher
     QUOTAS_SECRET_TOOL_BIN="$TEST_TMP_ROOT/missing-secret-tool"
     local output status
-    set +e
-    output="$(env \
-        QUOTAS_CONFIG_PATH="$QUOTAS_CONFIG_PATH" \
-        QUOTAS_CURL_BIN="$CURL_MOCK" \
-        QUOTAS_SECRET_TOOL_BIN="$QUOTAS_SECRET_TOOL_BIN" \
-        bash "$FETCHER" 2>&1)"
-    status=$?
-    set -e
+    if output="$(env \
+            QUOTAS_CONFIG_PATH="$QUOTAS_CONFIG_PATH" \
+            QUOTAS_CURL_BIN="$CURL_MOCK" \
+            QUOTAS_SECRET_TOOL_BIN="$QUOTAS_SECRET_TOOL_BIN" \
+            bash "$FETCHER" 2>&1)"; then
+        status=0
+    else
+        status=$?
+    fi
     [[ $status -ne 0 ]] || fail 'missing Secret Service must fail' || return 1
     assert_contains "$output" 'Secret Service'
+}
+
+test_absent_secret_check_preserves_errexit_state() {
+    [[ "$-" != *e* ]] || fail 'test requires errexit to start disabled' || return 1
+
+    test_rejects_absent_secret_service_without_fallback || return 1
+
+    [[ "$-" != *e* ]] || fail 'absent Secret Service check enabled errexit'
 }
 
 test_rejects_incomplete_keyring_pair() {
@@ -185,9 +225,48 @@ test_keeps_stdout_json_only() {
 
     run_fetcher >"$stdout_file" 2>"$stderr_file" || return 1
 
+    assert_single_json_document "$stdout_file" || return 1
     jq -e '.lastUpdated == "12:34 \u2022 31/07/2026"' "$stdout_file" >/dev/null || return 1
     assert_contains "$(<"$stderr_file")" 'Connecting to http://fallback' || return 1
     [[ "$(<"$stdout_file")" != *'Connecting to'* ]] || fail 'progress leaked to stdout'
+}
+
+test_single_json_validator_rejects_json_stream() {
+    local one_document="$TEST_TMP_ROOT/one-document" json_stream="$TEST_TMP_ROOT/json-stream"
+    printf '{"ok":true}\n' >"$one_document"
+    printf '{"ok":true}\n{"extra":true}\n' >"$json_stream"
+
+    assert_single_json_document "$one_document" || return 1
+    if assert_single_json_document "$json_stream"; then
+        fail 'multiple JSON documents must be rejected'
+    fi
+}
+
+test_task2_shell_sources_are_ascii() {
+    local output status
+    if output="$(LC_ALL=C grep -n '[^ -~]' \
+        "$repo_root/get-quotas.sh" \
+        "$repo_root/tests/test_get_quotas.bash" \
+        "$repo_root"/tests/helpers/*.sh 2>&1)"; then
+        status=0
+    else
+        status=$?
+    fi
+    [[ $status -eq 1 ]] || fail "non-ASCII Task 2 shell source: $output"
+}
+
+test_formats_production_time_with_runtime_bullet() {
+    prepare_fetcher
+    write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
+    queue_http 200 "$FIXTURES/api/auth-files-empty.json"
+    mkdir -p "$TEST_TMP_ROOT/bin"
+    printf '#!/usr/bin/env bash\nprintf '\''09:08 31/07/2026\\n'\''\n' >"$TEST_TMP_ROOT/bin/date"
+    chmod +x "$TEST_TMP_ROOT/bin/date"
+
+    local output
+    output="$(run_fetcher_without_now)" || return 1
+
+    jq -e '.lastUpdated == "09:08 \u2022 31/07/2026"' <<<"$output" >/dev/null
 }
 
 test_exposes_source_only_interface() {
@@ -234,18 +313,23 @@ test_mock_curl_expands_every_header_file() {
 }
 
 run_test 'reads fallback JSON without eval' test_reads_fallback_json_without_eval
+run_test 'failure assertion preserves errexit state' test_assert_fetcher_failure_preserves_errexit_state
 run_test 'prefers fallback when file exists' test_prefers_fallback_when_file_exists
 run_test 'uses keyring without fallback file' test_uses_keyring_without_fallback_file
 run_test 'rejects invalid fallback JSON' test_rejects_invalid_fallback_json
 run_test 'rejects incomplete fallback JSON' test_rejects_incomplete_fallback_json
 run_test 'rejects insecure fallback permissions' test_rejects_insecure_fallback_permissions
 run_test 'rejects absent Secret Service without fallback' test_rejects_absent_secret_service_without_fallback
+run_test 'absent Secret Service check preserves errexit state' test_absent_secret_check_preserves_errexit_state
 run_test 'rejects incomplete keyring pair' test_rejects_incomplete_keyring_pair
 run_test 'reports curl transport failure' test_reports_curl_transport_failure
 run_test 'rejects non-2xx auth-files response' test_rejects_non_2xx_auth_files_response
 run_test 'rejects invalid auth-files JSON' test_rejects_invalid_auth_files_json
 run_test 'rejects missing files array' test_rejects_missing_files_array
 run_test 'keeps stdout JSON only' test_keeps_stdout_json_only
+run_test 'single JSON validator rejects JSON streams' test_single_json_validator_rejects_json_stream
+run_test 'Task 2 shell sources are ASCII' test_task2_shell_sources_are_ascii
+run_test 'formats production time with runtime bullet' test_formats_production_time_with_runtime_bullet
 run_test 'exposes source-only interface' test_exposes_source_only_interface
 run_test 'mock curl separates header path from contents' test_mock_curl_logs_header_path_separately_from_contents
 run_test 'mock curl expands every header file' test_mock_curl_expands_every_header_file

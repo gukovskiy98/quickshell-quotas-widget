@@ -128,14 +128,17 @@ fetch_auth_files() {
 }
 
 main() {
-    local last_updated
+    local last_updated timestamp
 
     load_credentials || return 1
     printf 'Connecting to %s...\n' "$API_URL" >&2
     fetch_auth_files || return 1
 
     last_updated="${QUOTAS_NOW:-}"
-    [[ -n "$last_updated" ]] || last_updated="$(date '+%H:%M • %d/%m/%Y')"
+    if [[ -z "$last_updated" ]]; then
+        timestamp="$(date '+%H:%M %d/%m/%Y')"
+        last_updated="${timestamp%% *} $(printf '%b' '\xE2\x80\xA2') ${timestamp#* }"
+    fi
     jq -cn --arg lastUpdated "$last_updated" \
         '{quotas: [], minRemaining: 1, avgRemaining: 1, lastUpdated: $lastUpdated}'
 }

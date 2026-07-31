@@ -630,6 +630,15 @@ test_fetch_latest_release_rejects_duplicate_assets() {
     assert_remote_failure 'exactly one' fetch_latest_release
 }
 
+test_release_package_matches_archive_contract() {
+    prepare_remote_fixture
+    bash "$repo_root/scripts/package-release.sh" v1.0.0 "$TEST_TMP_ROOT/dist" || return 1
+    ARCHIVE_PATH="$TEST_TMP_ROOT/dist/quickshell-quotas-widget-v1.0.0.tar.gz"
+
+    validate_archive || return 1
+    assert_eq $'Quotas.qml\nQuotasPopup.qml\nget-quotas.sh' "$(tar -tzf "$ARCHIVE_PATH")"
+}
+
 test_validate_archive_rejects_parent_entry() {
     prepare_remote_fixture
     local source_dir="$TEST_TMP_ROOT/archive-source"
@@ -1539,6 +1548,7 @@ run_test 'every curl call disables curlrc first' test_every_curl_call_disables_c
 run_test 'API temporary files are owned by global cleanup' test_api_temporary_files_are_owned_by_global_cleanup
 run_test 'latest release rejects missing asset' test_fetch_latest_release_rejects_missing_asset
 run_test 'latest release rejects duplicate assets' test_fetch_latest_release_rejects_duplicate_assets
+run_test 'release package matches archive contract' test_release_package_matches_archive_contract
 run_test 'archive rejects parent entry' test_validate_archive_rejects_parent_entry
 run_test 'archive rejects absolute entry' test_validate_archive_rejects_absolute_entry
 run_test 'archive rejects missing payload file' test_validate_archive_rejects_missing_payload_file

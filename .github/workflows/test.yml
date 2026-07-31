@@ -1,0 +1,24 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install --yes shellcheck jq
+
+      - name: Syntax check
+        run: bash -n install.sh get-quotas.sh tests/*.bash tests/helpers/*.sh
+
+      - name: ShellCheck
+        run: shellcheck install.sh get-quotas.sh tests/*.bash tests/helpers/*.sh
+
+      - name: Tests
+        run: bash tests/run.sh

@@ -87,6 +87,20 @@ printf '%s\n' "$MANAGEMENT_KEY" | ./install.sh --api-url "https://management.exa
 
 Используйте те же `--api-url`, способ передачи ключа и значение `--install-dir`, что и при первой установке, если они по-прежнему актуальны.
 
+## Удаление
+
+Запустите отдельный скрипт удаления, чтобы убрать управляемый блок из `BarContent.qml` и три установленных файла виджета. Скрипт создает резервную копию `BarContent.qml` с меткой времени и перезапускает Quickshell, если найден работающий экземпляр. Значения Secret Service и `quotas-widget.conf` сохраняются для последующей повторной установки.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/gukovskiy98/quickshell-quotas-widget/master/uninstall.sh | bash
+```
+
+Для другого каталога установки передайте тот же `--install-dir`, который использовался при установке:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/gukovskiy98/quickshell-quotas-widget/master/uninstall.sh | bash -s -- --install-dir "$HOME/.config/quickshell/ii/modules/ii/bar"
+```
+
 ## Применение изменений или перезапуск Quickshell
 
 После успешной фиксации установки установщик проверяет экземпляр Quickshell с этой конфигурацией. Если он запущен, установщик выполняет `kill`, а затем запускает его с `--daemonize`. Ошибка перезапуска выводится как предупреждение и не откатывает уже зафиксированную установку.
@@ -176,4 +190,3 @@ bash tests/run.sh
 ```
 
 Публичные релизы используют теги, начинающиеся с `v`. Релиз должен содержать архив `quickshell-quotas-widget-<tag>.tar.gz` ровно с тремя обычными файлами верхнего уровня: `Quotas.qml`, `QuotasPopup.qml` и `get-quotas.sh`. Публичный установщик запрашивает последний GitHub Release и отклоняет отсутствующие, дублирующиеся, вложенные, лишние или небезопасные элементы архива.
-

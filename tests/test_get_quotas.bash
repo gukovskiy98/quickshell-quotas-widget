@@ -342,7 +342,7 @@ test_mock_curl_expands_every_header_file() {
 test_transforms_codex_primary_window() {
     prepare_fetcher
     write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
-    queue_http_text 200 '{"files":[{"name":"codex.json","type":"codex","auth_index":11}]}'
+    queue_http_text 200 '{"files":[{"name":"codex.json","type":"codex","auth_index":"codex-opaque-index"}]}'
     queue_http 200 "$FIXTURES/api/codex-response.json"
 
     local output
@@ -365,7 +365,7 @@ test_transforms_codex_primary_window() {
 test_transforms_antigravity_groups() {
     prepare_fetcher
     write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
-    queue_http_text 200 '{"files":[{"name":"antigravity.json","type":"antigravity","auth_index":22,"project_id":"project-direct"}]}'
+    queue_http_text 200 '{"files":[{"name":"antigravity.json","type":"antigravity","auth_index":"antigravity-opaque-index","project_id":"project-direct"}]}'
     queue_http 200 "$FIXTURES/api/antigravity-response.json"
 
     local output

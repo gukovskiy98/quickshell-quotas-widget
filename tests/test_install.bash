@@ -1405,8 +1405,8 @@ test_ci_checks_release_packaging_script() {
 
     for workflow in test.yml release.yml; do
         content="$(<"$repo_root/.github/workflows/$workflow")"
-        assert_contains "$content" 'bash -n install.sh get-quotas.sh scripts/package-release.sh tests/*.bash tests/helpers/*.sh' || return 1
-        assert_contains "$content" 'shellcheck install.sh get-quotas.sh scripts/package-release.sh tests/*.bash tests/helpers/*.sh' || return 1
+        assert_contains "$content" 'bash -n install.sh uninstall.sh get-quotas.sh scripts/package-release.sh tests/*.bash tests/helpers/*.sh' || return 1
+        assert_contains "$content" 'shellcheck install.sh uninstall.sh get-quotas.sh scripts/package-release.sh tests/*.bash tests/helpers/*.sh' || return 1
     done
 }
 

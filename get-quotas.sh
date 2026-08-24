@@ -164,7 +164,7 @@ api_call() {
 
     if [[ -n "$data" ]]; then
         request_body="$(jq -cn \
-            --argjson authIndex "$auth_index" \
+            --arg authIndex "$auth_index" \
             --arg method "$method" \
             --arg url "$upstream_url" \
             --argjson header "$headers_json" \
@@ -174,7 +174,7 @@ api_call() {
         }
     else
         request_body="$(jq -cn \
-            --argjson authIndex "$auth_index" \
+            --arg authIndex "$auth_index" \
             --arg method "$method" \
             --arg url "$upstream_url" \
             --argjson header "$headers_json" \

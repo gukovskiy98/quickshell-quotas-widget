@@ -89,6 +89,20 @@ To update, rerun the same installer command. It downloads the latest GitHub Rele
 
 Use the same `--api-url`, key-input method, and `--install-dir` value as the original installation when they are still applicable.
 
+## Uninstalling
+
+Run the standalone uninstaller to remove the managed `BarContent.qml` block and the three installed payload files. It creates a timestamped `BarContent.qml` backup and restarts Quickshell when an instance is running. Secret Service values and `quotas-widget.conf` are preserved for a later reinstall.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/gukovskiy98/quickshell-quotas-widget/master/uninstall.sh | bash
+```
+
+For a custom installation directory, pass the same `--install-dir` used during installation:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/gukovskiy98/quickshell-quotas-widget/master/uninstall.sh | bash -s -- --install-dir "$HOME/.config/quickshell/ii/modules/ii/bar"
+```
+
 ## Applying or restarting Quickshell
 
 After a successful committed installation, the installer checks for a Quickshell instance using this configuration. If one is running, it runs `kill` and then starts it with `--daemonize`. A restart failure is reported as a warning and does not roll back the committed installation.

@@ -44,7 +44,9 @@ test_documents_public_installer_and_cli() {
     assert_contains "$content" '--management-key-stdin' || return 1
     assert_contains "$content" 'locally downloaded installer' || return 1
     assert_contains "$content" '--install-dir' || return 1
-    assert_contains "$content" 'bar modules directory'
+    assert_contains "$content" 'bar modules directory' || return 1
+    assert_contains "$content" 'quickshell-quotas-widget/master/uninstall.sh' || return 1
+    assert_contains "$content" "Secret Service values and \`quotas-widget.conf\` are preserved"
 }
 
 # Markdown code spans are asserted literally, not evaluated by this test shell.

@@ -4,6 +4,8 @@ Quickshell panel widget for viewing AI account quotas through a Management API.
 
 [Русская версия](README_RU.md)
 
+![Quickshell Quotas Widget preview](docs/widget-preview.png)
+
 ## What it does and compatibility
 
 The widget adds a quota indicator and popup to the `leftCenterGroup` of the end4-dots Quickshell bar. It loads quota data at startup, shows the average remaining quota in the bar, and refreshes on right-click.

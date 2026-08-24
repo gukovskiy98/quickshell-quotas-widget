@@ -412,7 +412,7 @@ validate_writable_targets() (
     local -a probe_paths=()
 
     # Invoked indirectly by the EXIT trap below.
-    # shellcheck disable=SC2329
+    # shellcheck disable=SC2317,SC2329
     cleanup_writable_probes() {
         ((${#probe_paths[@]} == 0)) || rm -f -- "${probe_paths[@]}"
     }

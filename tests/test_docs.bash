@@ -5,9 +5,14 @@ repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$repo_root/tests/test_helper.bash"
 
 README_FILE="$repo_root/README.md"
+README_RU_FILE="$repo_root/README_RU.md"
 
 read_readme() {
     REPLY="$(<"$README_FILE")"
+}
+
+read_russian_readme() {
+    REPLY="$(<"$README_RU_FILE")"
 }
 
 decode_utf8_hex() {
@@ -21,13 +26,10 @@ decode_utf8_hex() {
 }
 
 read_guides() {
-    local content russian_heading
     read_readme
-    content="$REPLY"
-    russian_heading="$(decode_utf8_hex '232320d0a0d183d181d181d0bad0b8d0b9')"
-    ENGLISH_GUIDE="${content#*'## English'}"
-    ENGLISH_GUIDE="${ENGLISH_GUIDE%%"$russian_heading"*}"
-    RUSSIAN_GUIDE="${content#*"$russian_heading"}"
+    ENGLISH_GUIDE="$REPLY"
+    read_russian_readme
+    RUSSIAN_GUIDE="$REPLY"
 }
 
 test_documents_public_installer_and_cli() {
@@ -115,30 +117,31 @@ test_documents_exact_provider_scope() {
     assert_contains "$content" 'Only Antigravity and Codex quota providers are supported.'
 }
 
-test_has_english_and_russian_guides() {
-    local content russian_heading
+test_has_bidirectional_language_links() {
+    local english russian
     read_readme
-    content="$REPLY"
-    russian_heading="$(printf '%b' '## \xD0\xA0\xD1\x83\xD1\x81\xD1\x81\xD0\xBA\xD0\xB8\xD0\xB9')"
+    english="$REPLY"
+    read_russian_readme
+    russian="$REPLY"
 
-    assert_contains "$content" '## English' || return 1
-    assert_contains "$content" "$russian_heading"
+    assert_contains "$english" 'README_RU.md' || return 1
+    assert_contains "$russian" 'README.md'
 }
 
 russian_section_headings() {
     local -a headings=(
-        '23232320d09dd0b0d0b7d0bdd0b0d187d0b5d0bdd0b8d0b520d0b820d181d0bed0b2d0bcd0b5d181d182d0b8d0bcd0bed181d182d18c'
-        '23232320d09ed182d0bed0b1d180d0b0d0b6d0b0d0b5d0bcd18bd0b520d0bad0b2d0bed182d18b'
-        '23232320d097d0b0d0b2d0b8d181d0b8d0bcd0bed181d182d0b8'
-        '23232320d0a0d0b5d0bad0bed0bcd0b5d0bdd0b4d183d0b5d0bcd0b0d18f20d183d181d182d0b0d0bdd0bed0b2d0bad0b020d0bed0b4d0bdd0bed0b920d0bad0bed0bcd0b0d0bdd0b4d0bed0b9'
-        '23232320d0a4d0bbd0b0d0b3d0b820d0b0d0b2d182d0bed0bcd0b0d182d0b8d0b7d0b0d186d0b8d0b820d0b820d180d0b0d181d0bad180d18bd182d0b8d0b520d0bad0bbd18ed187d0b0'
-        '23232320d094d180d183d0b3d0bed0b920d0bad0b0d182d0b0d0bbd0bed0b320d183d181d182d0b0d0bdd0bed0b2d0bad0b8'
-        '23232320d0a5d180d0b0d0bdd0b5d0bdd0b8d0b520d183d187d0b5d182d0bdd18bd18520d0b4d0b0d0bdd0bdd18bd185'
-        '23232320d09ed0b1d0bdd0bed0b2d0bbd0b5d0bdd0b8d0b5'
-        '23232320d09fd180d0b8d0bcd0b5d0bdd0b5d0bdd0b8d0b520d0b8d0b7d0bcd0b5d0bdd0b5d0bdd0b8d0b920d0b8d0bbd0b820d0bfd0b5d180d0b5d0b7d0b0d0bfd183d181d0ba20517569636b7368656c6c'
-        '23232320d0a0d183d187d0bdd0b0d18f20d183d181d182d0b0d0bdd0bed0b2d0bad0b020d0b8d0bbd0b820d0b2d0bed181d181d182d0b0d0bdd0bed0b2d0bbd0b5d0bdd0b8d0b5'
-        '23232320d0a0d0b5d0b7d0b5d180d0b2d0bdd18bd0b520d0bad0bed0bfd0b8d0b820d0b820d0bed182d0bad0b0d182'
-        '23232320d0a2d0b5d181d182d18b20d180d0b0d0b7d180d0b0d0b1d0bed182d0bad0b820d0b820d180d0b5d0bbd0b8d0b7d18b'
+        '232320d09dd0b0d0b7d0bdd0b0d187d0b5d0bdd0b8d0b520d0b820d181d0bed0b2d0bcd0b5d181d182d0b8d0bcd0bed181d182d18c'
+        '232320d09ed182d0bed0b1d180d0b0d0b6d0b0d0b5d0bcd18bd0b520d0bad0b2d0bed182d18b'
+        '232320d097d0b0d0b2d0b8d181d0b8d0bcd0bed181d182d0b8'
+        '232320d0a0d0b5d0bad0bed0bcd0b5d0bdd0b4d183d0b5d0bcd0b0d18f20d183d181d182d0b0d0bdd0bed0b2d0bad0b020d0bed0b4d0bdd0bed0b920d0bad0bed0bcd0b0d0bdd0b4d0bed0b9'
+        '232320d0a4d0bbd0b0d0b3d0b820d0b0d0b2d182d0bed0bcd0b0d182d0b8d0b7d0b0d186d0b8d0b820d0b820d180d0b0d181d0bad180d18bd182d0b8d0b520d0bad0bbd18ed187d0b0'
+        '232320d094d180d183d0b3d0bed0b920d0bad0b0d182d0b0d0bbd0bed0b320d183d181d182d0b0d0bdd0bed0b2d0bad0b8'
+        '232320d0a5d180d0b0d0bdd0b5d0bdd0b8d0b520d183d187d0b5d182d0bdd18bd18520d0b4d0b0d0bdd0bdd18bd185'
+        '232320d09ed0b1d0bdd0bed0b2d0bbd0b5d0bdd0b8d0b5'
+        '232320d09fd180d0b8d0bcd0b5d0bdd0b5d0bdd0b8d0b520d0b8d0b7d0bcd0b5d0bdd0b5d0bdd0b8d0b920d0b8d0bbd0b820d0bfd0b5d180d0b5d0b7d0b0d0bfd183d181d0ba20517569636b7368656c6c'
+        '232320d0a0d183d187d0bdd0b0d18f20d183d181d182d0b0d0bdd0bed0b2d0bad0b020d0b8d0bbd0b820d0b2d0bed181d181d182d0b0d0bdd0bed0b2d0bbd0b5d0bdd0b8d0b5'
+        '232320d0a0d0b5d0b7d0b5d180d0b2d0bdd18bd0b520d0bad0bed0bfd0b8d0b820d0b820d0bed182d0bad0b0d182'
+        '232320d0a2d0b5d181d182d18b20d180d0b0d0b7d180d0b0d0b1d0bed182d0bad0b820d0b820d180d0b5d0bbd0b8d0b7d18b'
     )
     local hex
 
@@ -259,18 +262,10 @@ extract_bash_blocks() {
 }
 
 test_translations_use_identical_commands() {
-    local content english russian russian_heading english_commands russian_commands
-    read_readme
-    content="$REPLY"
-    russian_heading="$(printf '%b' '## \xD0\xA0\xD1\x83\xD1\x81\xD1\x81\xD0\xBA\xD0\xB8\xD0\xB9')"
-
-    assert_contains "$content" '## English' || return 1
-    assert_contains "$content" "$russian_heading" || return 1
-    english="${content#*'## English'}"
-    english="${english%%"$russian_heading"*}"
-    russian="${content#*"$russian_heading"}"
-    english_commands="$(extract_bash_blocks <<<"$english")"
-    russian_commands="$(extract_bash_blocks <<<"$russian")"
+    local english_commands russian_commands
+    read_guides
+    english_commands="$(extract_bash_blocks <<<"$ENGLISH_GUIDE")"
+    russian_commands="$(extract_bash_blocks <<<"$RUSSIAN_GUIDE")"
 
     [[ -n "$english_commands" ]] || fail 'English guide has no shell commands' || return 1
     assert_eq "$english_commands" "$russian_commands"
@@ -280,6 +275,8 @@ test_removes_legacy_machine_requirements() {
     local content
     read_readme
     content="$REPLY"
+    read_russian_readme
+    content+="$REPLY"
 
     assert_contains "$content" 'Bun is not required' || return 1
     [[ "$content" != *'.bun/bin/bun'* ]] || fail 'README still requires the legacy Bun path' || return 1
@@ -298,7 +295,7 @@ run_test 'documents updates restart and recovery' test_documents_updates_restart
 run_test 'documents safe plaintext recovery' test_documents_safe_plaintext_recovery
 run_test 'documents validation sequence' test_documents_validation_sequence
 run_test 'documents exact provider scope' test_documents_exact_provider_scope
-run_test 'has English and Russian guides' test_has_english_and_russian_guides
+run_test 'has bidirectional language links' test_has_bidirectional_language_links
 run_test 'Russian guide covers public contract' test_russian_guide_covers_public_contract
 run_test 'Russian contract rejects each removed anchor' test_russian_contract_rejects_each_removed_anchor
 run_test 'Russian contract registers round 3 details' test_russian_contract_registers_round3_details

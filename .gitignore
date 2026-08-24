@@ -1,2 +1,5 @@
 .worktrees/
 quotas-widget.conf
+.codebase-memory
+.serena
+docs/superpowers

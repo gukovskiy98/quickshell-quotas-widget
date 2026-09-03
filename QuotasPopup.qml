@@ -76,14 +76,14 @@ StyledPopup {
 
                                             StyledPopupValueRow {
                                                 Layout.fillWidth: true
-                                                icon: "pie_chart"
+                                                icon: (itemColumn.quotaItem && itemColumn.quotaItem.icon) ? itemColumn.quotaItem.icon : "pie_chart"
                                                 label: (itemColumn.quotaItem && itemColumn.quotaItem.label) ? (itemColumn.quotaItem.label + ":") : ""
                                                 value: (itemColumn.quotaItem && itemColumn.quotaItem.val) ? itemColumn.quotaItem.val : ""
                                             }
 
                                             StyledText {
                                                 visible: Boolean(itemColumn.quotaItem && itemColumn.quotaItem.resetTime)
-                                                text: "↳ Refresh in " + ((itemColumn.quotaItem && itemColumn.quotaItem.resetTime) ? itemColumn.quotaItem.resetTime : "")
+                                                text: "↳ " + ((itemColumn.quotaItem && itemColumn.quotaItem.resetPrefix) ? (itemColumn.quotaItem.resetPrefix + " ") : "Refresh in ") + ((itemColumn.quotaItem && itemColumn.quotaItem.resetTime) ? itemColumn.quotaItem.resetTime : "")
                                                 font.pixelSize: Appearance.font.pixelSize.smaller
                                                 color: Appearance.colors.colOnSurfaceVariant
                                                 Layout.leftMargin: 28

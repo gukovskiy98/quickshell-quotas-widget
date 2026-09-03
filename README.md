@@ -17,7 +17,8 @@ Only Antigravity and Codex quota providers are supported. Other provider records
 ## Supported quota displays
 
 - Antigravity account groups and buckets, including remaining percentages and reset times.
-- Codex primary-window remaining percentage and reset time.
+- Codex primary- and secondary-window remaining percentages and reset times.
+- Codex rate limit reset credits and expiration times when available.
 - Per-account details in the popup and the average remaining quota in the bar.
 - Partial results when one supported account fails while other accounts remain available.
 

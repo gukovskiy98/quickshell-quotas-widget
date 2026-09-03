@@ -362,6 +362,82 @@ test_transforms_codex_primary_window() {
     [[ "$(<"$MOCK_CURL_LOG")" != *'fallback-key'* ]] || fail 'management key leaked into provider curl arguments'
 }
 
+test_transforms_codex_dual_windows() {
+    prepare_fetcher
+    write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
+    queue_http_text 200 '{"files":[{"name":"codex.json","type":"codex","auth_index":"codex-opaque-index"}]}'
+    queue_http_text 200 '{"status_code":200,"body":{"rate_limit":{"primary_window":{"used_percent":11,"reset_at":1788468387},"secondary_window":{"used_percent":34,"reset_at":1788772351}}}}'
+
+    local output
+    output="$(QUOTAS_EPOCH_NOW=1788453782 run_fetcher)" || return 1
+
+    jq -e '
+      .quotas[0].type == "codex" and
+      .quotas[0].groups[0].name == "Codex Limit" and
+      (.quotas[0].groups[0].items | length) == 2 and
+      .quotas[0].groups[0].items[0].label == "Primary Window" and
+      .quotas[0].groups[0].items[0].val == "89.00%" and
+      .quotas[0].groups[0].items[0].resetTime == "4 hours, 3 minutes" and
+      .quotas[0].groups[0].items[1].label == "Secondary Window" and
+      .quotas[0].groups[0].items[1].val == "66.00%" and
+      .quotas[0].groups[0].items[1].resetTime == "3 days, 16 hours" and
+      .quotas[0].minRemaining == 0.66 and
+      .minRemaining == 0.66 and
+      .avgRemaining == 0.775
+    ' <<<"$output" >/dev/null
+}
+
+test_codex_fetches_and_transforms_reset_credits() {
+    prepare_fetcher
+    write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
+    queue_http_text 200 '{"files":[{"name":"codex.json","type":"codex","auth_index":"codex-opaque-index","id_token":{"chatgpt_account_id":"acc-test-123"}}]}'
+    queue_http_text 200 '{"status_code":200,"body":{"rate_limit":{"primary_window":{"used_percent":11,"reset_at":1788468387}},"rate_limit_reset_credits":{"available_count":1}}}'
+    queue_http_text 200 '{"status_code":200,"body":{"credits":[{"title":"Full reset (Weekly + 5 hr)","status":"available","expires_at":"2026-09-20T21:29:54.574040Z"}],"available_count":1}}'
+
+    local output
+    output="$(QUOTAS_EPOCH_NOW=1788453782 run_fetcher)" || return 1
+
+    jq -e '
+      .quotas[0].type == "codex" and
+      (.quotas[0].groups | length) == 2 and
+      .quotas[0].groups[0].name == "Codex Limit" and
+      .quotas[0].groups[1].name == "Rate Limit Resets" and
+      (.quotas[0].groups[1].items | length) == 1 and
+      .quotas[0].groups[1].items[0].label == "Full reset (Weekly + 5 hr)" and
+      .quotas[0].groups[1].items[0].val == "Available" and
+      .quotas[0].groups[1].items[0].icon == "schedule" and
+      .quotas[0].groups[1].items[0].resetPrefix == "Expires in" and
+      .quotas[0].groups[1].items[0].resetTime == "17 days, 4 hours" and
+      .quotas[0].minRemaining == 0.89 and
+      .minRemaining == 0.89 and
+      .avgRemaining == 0.89
+    ' <<<"$output" >/dev/null || return 1
+
+    assert_contains "$(<"$MOCK_CURL_LOG")" 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits' || return 1
+    assert_contains "$(<"$MOCK_CURL_LOG")" 'acc-test-123' || return 1
+    assert_contains "$(<"$MOCK_CURL_LOG")" 'OpenAI-Beta' || return 1
+    assert_contains "$(<"$MOCK_CURL_LOG")" 'Originator' || return 1
+}
+
+test_codex_skips_reset_credits_when_available_count_is_zero() {
+    prepare_fetcher
+    write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
+    queue_http_text 200 '{"files":[{"name":"codex.json","type":"codex","auth_index":"codex-opaque-index"}]}'
+    queue_http_text 200 '{"status_code":200,"body":{"rate_limit":{"primary_window":{"used_percent":11,"reset_at":1788468387}},"rate_limit_reset_credits":{"available_count":0}}}'
+
+    local output
+    output="$(QUOTAS_EPOCH_NOW=1788453782 run_fetcher)" || return 1
+
+    jq -e '
+      .quotas[0].type == "codex" and
+      (.quotas[0].groups | length) == 1 and
+      .quotas[0].groups[0].name == "Codex Limit" and
+      ([.quotas[0].groups[].name] | index("Rate Limit Resets")) == null
+    ' <<<"$output" >/dev/null || return 1
+
+    [[ "$(<"$MOCK_CURL_LOG")" != *'wham/rate-limit-reset-credits'* ]] || fail 'reset credits requested when available count was 0'
+}
+
 test_transforms_antigravity_groups() {
     prepare_fetcher
     write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
@@ -704,6 +780,9 @@ run_test 'exposes source-only interface' test_exposes_source_only_interface
 run_test 'mock curl separates header path from contents' test_mock_curl_logs_header_path_separately_from_contents
 run_test 'mock curl expands every header file' test_mock_curl_expands_every_header_file
 run_test 'transforms Codex primary window' test_transforms_codex_primary_window
+run_test 'transforms Codex dual windows' test_transforms_codex_dual_windows
+run_test 'fetches and transforms Codex reset credits' test_codex_fetches_and_transforms_reset_credits
+run_test 'skips Codex reset credits when count is zero' test_codex_skips_reset_credits_when_available_count_is_zero
 run_test 'transforms Antigravity groups' test_transforms_antigravity_groups
 run_test 'reads Antigravity project ID from metadata' test_reads_antigravity_project_id_from_metadata
 run_test 'downloads Antigravity auth file for project ID' test_downloads_antigravity_auth_file_for_project_id

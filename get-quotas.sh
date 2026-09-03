@@ -206,6 +206,29 @@ get_codex_quota() {
     api_call "$auth_index" GET 'https://chatgpt.com/backend-api/wham/usage' "$headers_json"
 }
 
+get_codex_reset_credits() {
+    local auth_index="$1" account_id="${2:-}" headers_json
+
+    headers_json="$(jq -cn \
+        --arg authorization 'Bearer $TOKEN$' \
+        --arg userAgent 'codex_cli_rs/0.76.0 (Debian 13.0.0; x86_64) WindowsTerminal' \
+        --arg accountId "$account_id" \
+        --arg accept 'application/json' \
+        --arg contentType 'application/json' \
+        --arg openAiBeta 'codex-1' \
+        --arg originator 'Codex Desktop' \
+        '{
+          Authorization: $authorization,
+          "Content-Type": $contentType,
+          "User-Agent": $userAgent,
+          Accept: $accept,
+          "OpenAI-Beta": $openAiBeta,
+          Originator: $originator
+        } + (if ($accountId | length) > 0 then {"Chatgpt-Account-Id": $accountId} else {} end)')"
+    api_call "$auth_index" GET 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits' "$headers_json"
+}
+
+
 get_antigravity_quota() {
     local file_json="$1" auth_index="$2" project_id name encoded_name data headers_json
 
@@ -282,42 +305,112 @@ format_refresh_in() {
 }
 
 build_codex_account() {
-    local file_json="$1" quota_json="$2" name remaining reset_time percentage
+    local file_json="$1" quota_json="$2" credits_json="${3:-}"
+    local name items min_remaining
 
     name="$(jq -r '.name // ""' <<<"$file_json")"
-    remaining="$(jq -r '
-        .rate_limit.primary_window.used_percent
-        | select(type == "number")
-        | (1 - (. / 100))
-        | if . < 0 then 0 else . end
+    items="$(jq -c '
+        [
+          {key: "primary_window", label: "Primary Window"},
+          {key: "secondary_window", label: "Secondary Window"}
+        ] as $defs
+        | [
+            $defs[] as $d
+            | (.rate_limit[$d.key]? // empty) as $w
+            | ($w.used_percent | select(type == "number") | ((100 - .) / 100) | if . < 0 then 0 else . end) as $rem
+            | {
+                label: $d.label,
+                remaining: $rem,
+                resetValue: ($w.reset_at // null)
+              }
+          ]
     ' <<<"$quota_json")"
-    if [[ -z "$remaining" ]]; then
+
+    if jq -e 'length == 0' >/dev/null 2>&1 <<<"$items"; then
         QUOTA_ACCOUNT="$(jq -cn --arg name "$name" \
             '{name: $name, type: "codex", groups: [], minRemaining: null}')"
         QUOTA_REMAINING=""
         return 0
     fi
-    reset_time="$(format_refresh_in "$(jq -r '.rate_limit.primary_window.reset_at // empty' <<<"$quota_json")")"
-    LC_NUMERIC=C printf -v percentage '%.2f%%' "$(jq -nr --argjson remaining "$remaining" '$remaining * 100')"
+
+    min_remaining="$(jq -r '[.[].remaining] | min' <<<"$items")"
     QUOTA_ACCOUNT="$(jq -cn \
         --arg name "$name" \
-        --arg resetTime "$reset_time" \
-        --arg percentage "$percentage" \
-        --argjson remaining "$remaining" \
+        --argjson items "$items" \
+        --argjson minRemaining "$min_remaining" \
         '{
           name: $name,
           type: "codex",
           groups: [{
             name: "Codex Limit",
-            items: [{
-              label: "Primary Window",
-              val: $percentage,
-              resetTime: $resetTime
-            }]
+            items: $items
           }],
-          minRemaining: $remaining
+          minRemaining: $minRemaining
         }')"
-    QUOTA_REMAINING="$remaining"
+
+    local item_index remaining reset_value reset_text percentage
+    while IFS=$'\t' read -r item_index remaining reset_value; do
+        reset_text="$(format_refresh_in "$reset_value")"
+        LC_NUMERIC=C printf -v percentage '%.2f%%' "$(jq -nr --argjson remaining "$remaining" '$remaining * 100')"
+        QUOTA_ACCOUNT="$(jq -c \
+            --argjson itemIndex "$item_index" \
+            --arg percentage "$percentage" \
+            --arg resetTime "$reset_text" \
+            '.groups[0].items[$itemIndex].val = $percentage
+             | .groups[0].items[$itemIndex].resetTime = $resetTime' \
+            <<<"$QUOTA_ACCOUNT")"
+    done < <(jq -r '
+        to_entries[]
+        | [.key, .value.remaining, (.value.resetValue // "")]
+        | @tsv
+    ' <<<"$items")
+    QUOTA_ACCOUNT="$(jq -c '.groups[0].items |= map(del(.remaining, .resetValue))' <<<"$QUOTA_ACCOUNT")"
+    QUOTA_REMAINING="$(jq -r '[.[].remaining] | .[]' <<<"$items")"
+
+    local reset_items="[]"
+    if [[ -n "$credits_json" ]]; then
+        reset_items="$(jq -c '
+            [
+              (.credits // [])[]?
+              | select(.status == "available" or (.status == null and .expires_at != null))
+              | {
+                  label: ((.title | select(type == "string" and length > 0)) // "Rate Limit Reset"),
+                  val: "Available",
+                  icon: "schedule",
+                  resetPrefix: "Expires in",
+                  expiresAt: (.expires_at // null)
+                }
+            ]
+        ' <<<"$credits_json")"
+
+        if jq -e 'length == 0' >/dev/null 2>&1 <<<"$reset_items"; then
+            local avail_count
+            avail_count="$(jq -r '(.available_count // 0) | if type == "number" then . else 0 end' <<<"$credits_json")"
+            if (( avail_count > 0 )); then
+                reset_items="$(jq -cn '[{label: "Rate Limit Reset", val: "Available", icon: "schedule", resetPrefix: "Expires in", expiresAt: null}]')"
+            fi
+        fi
+    fi
+
+    if jq -e 'length > 0' >/dev/null 2>&1 <<<"$reset_items"; then
+        local reset_group
+        reset_group="$(jq -cn --argjson items "$reset_items" '{name: "Rate Limit Resets", items: $items}')"
+        local r_idx expires_val expires_text
+        while IFS=$'\t' read -r r_idx expires_val; do
+            expires_text="$(format_refresh_in "$expires_val")"
+            reset_group="$(jq -c \
+                --argjson itemIndex "$r_idx" \
+                --arg resetTime "$expires_text" \
+                '.items[$itemIndex].resetTime = $resetTime' \
+                <<<"$reset_group")"
+        done < <(jq -r '
+            to_entries[]
+            | [.key, (.value.expiresAt // "")]
+            | @tsv
+        ' <<<"$reset_items")
+        reset_group="$(jq -c '.items |= map(del(.expiresAt))' <<<"$reset_group")"
+        QUOTA_ACCOUNT="$(jq -c --argjson resetGroup "$reset_group" '.groups += [$resetGroup]' <<<"$QUOTA_ACCOUNT")"
+    fi
 }
 
 build_antigravity_account() {
@@ -370,6 +463,7 @@ build_antigravity_account() {
 fetch_all_quotas() (
     local accounts_file remaining_file file_json type auth_index name
     local last_updated timestamp quotas min_remaining avg_remaining
+    local usage_json credits_json available_count account_id
 
     accounts_file=""
     remaining_file=""
@@ -399,8 +493,31 @@ fetch_all_quotas() (
         QUOTA_REMAINING=""
         case "$type" in
             codex)
-                if get_codex_quota "$auth_index" && build_codex_account "$file_json" "$API_CALL_BODY"; then
-                    :
+                if get_codex_quota "$auth_index"; then
+                    usage_json="$API_CALL_BODY"
+                    credits_json=""
+                    available_count="$(jq -r '(.rate_limit_reset_credits.available_count // 0) | if type == "number" then . else 0 end' <<<"$usage_json")"
+                    if (( available_count > 0 )); then
+                        account_id="$(jq -r '
+                            .id_token.chatgpt_account_id //
+                            .id_token.chatgptAccountId //
+                            .account_id //
+                            .accountId //
+                            empty
+                        ' <<<"$file_json")"
+                        if [[ -z "$account_id" ]]; then
+                            account_id="$(jq -r '.account_id // empty' <<<"$usage_json")"
+                        fi
+                        if get_codex_reset_credits "$auth_index" "$account_id"; then
+                            credits_json="$API_CALL_BODY"
+                        fi
+                    fi
+                    if build_codex_account "$file_json" "$usage_json" "$credits_json"; then
+                        :
+                    else
+                        printf '[ERROR] %s (%s): failed to build quota account\n' "$name" "$type" >&2
+                        continue
+                    fi
                 else
                     printf '[ERROR] %s (%s): quota request failed\n' "$name" "$type" >&2
                     continue

@@ -269,7 +269,7 @@ get_antigravity_quota() {
         --arg userAgent 'antigravity/cli/1.0.13 (aidev_client; os_type=darwin; arch=arm64)' \
         '{Authorization: $authorization, "User-Agent": $userAgent}')"
     api_call "$auth_index" POST \
-        'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary' \
+        'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary' \
         "$headers_json" "$data"
 }
 

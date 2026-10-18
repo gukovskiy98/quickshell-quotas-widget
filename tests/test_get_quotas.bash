@@ -468,7 +468,7 @@ test_reads_antigravity_project_id_from_metadata() {
     run_fetcher >/dev/null || return 1
 
     [[ "$(<"$MOCK_CURL_LOG")" != *'/auth-files/download?'* ]] || fail 'metadata project ID must avoid auth-file download' || return 1
-    assert_contains "$(<"$MOCK_CURL_LOG")" 'retrieveUserQuotaSummary' || return 1
+    assert_contains "$(<"$MOCK_CURL_LOG")" 'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary' || return 1
     assert_contains "$(<"$MOCK_CURL_LOG")" 'antigravity/cli/1.0.13' || return 1
     [[ "$(<"$MOCK_CURL_LOG")" != *'fallback-key'* ]] || fail 'management key leaked into provider curl arguments'
 }

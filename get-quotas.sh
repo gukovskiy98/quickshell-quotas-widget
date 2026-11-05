@@ -264,9 +264,10 @@ get_antigravity_quota() {
         die 'cannot find Project ID for Antigravity account' || return 1
     }
     data="$(jq -cn --arg project "$project_id" '{project: $project}')"
+    # Older CLI versions receive only Claude/GPT buckets, omitting Gemini and Argon.
     headers_json="$(jq -cn \
         --arg authorization 'Bearer $TOKEN$' \
-        --arg userAgent 'antigravity/cli/1.0.13 (aidev_client; os_type=darwin; arch=arm64)' \
+        --arg userAgent 'antigravity/cli/1.4.12 (aidev_client; os_type=linux; arch=x64)' \
         '{Authorization: $authorization, "User-Agent": $userAgent}')"
     api_call "$auth_index" POST \
         'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary' \

@@ -459,6 +459,50 @@ test_transforms_antigravity_groups() {
     ' <<<"$output" >/dev/null
 }
 
+test_transforms_antigravity_gemini_and_argon_windows() {
+    prepare_fetcher
+    write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
+    queue_http_text 200 '{"files":[{"name":"antigravity.json","type":"antigravity","auth_index":22,"project_id":"project-direct"}]}'
+    queue_http 200 "$FIXTURES/api/antigravity-summary-response.json"
+
+    local output
+    output="$(QUOTAS_EPOCH_NOW=1893369600 run_fetcher)" || return 1
+
+    jq -e '
+      [.quotas[0].groups[].name] == ["Gemini Models", "Claude and GPT models", "Gemini 4 Argon"] and
+      [.quotas[0].groups[].items | length] == [2, 2, 1] and
+      [.quotas[0].groups[0].items[].val] == ["80.00%", "60.00%"] and
+      [.quotas[0].groups[1].items[].val] == ["100.00%", "90.00%"] and
+      .quotas[0].groups[2].items[0] == {
+        label: "Gemini 4 Argon Weekly Limit",
+        val: "25.00%",
+        resetTime: "1 day, 0 hours"
+      } and
+      .quotas[0].minRemaining == 0.25 and
+      .minRemaining == 0.25 and
+      ((.avgRemaining - 0.71) | fabs) < 0.000001
+    ' <<<"$output" >/dev/null
+}
+
+test_keeps_exhausted_argon_quota_separate_from_gemini() {
+    prepare_fetcher
+    write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
+    queue_http_text 200 '{"files":[{"name":"antigravity.json","type":"antigravity","auth_index":22,"project_id":"project-direct"}]}'
+    queue_http_text 200 "$(jq '.body.groups[2].buckets[0].remainingFraction = 0' "$FIXTURES/api/antigravity-summary-response.json")"
+
+    local output
+    output="$(run_fetcher)" || return 1
+
+    jq -e '
+      .quotas[0].groups[0].items[0].val == "80.00%" and
+      .quotas[0].groups[2].name == "Gemini 4 Argon" and
+      .quotas[0].groups[2].items[0].val == "0.00%" and
+      .quotas[0].minRemaining == 0 and
+      .minRemaining == 0 and
+      ((.avgRemaining - 0.66) | fabs) < 0.000001
+    ' <<<"$output" >/dev/null
+}
+
 test_reads_antigravity_project_id_from_metadata() {
     prepare_fetcher
     write_config '{"apiUrl":"http://fallback","managementKey":"fallback-key"}'
@@ -469,7 +513,7 @@ test_reads_antigravity_project_id_from_metadata() {
 
     [[ "$(<"$MOCK_CURL_LOG")" != *'/auth-files/download?'* ]] || fail 'metadata project ID must avoid auth-file download' || return 1
     assert_contains "$(<"$MOCK_CURL_LOG")" 'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary' || return 1
-    assert_contains "$(<"$MOCK_CURL_LOG")" 'antigravity/cli/1.0.13' || return 1
+    assert_contains "$(<"$MOCK_CURL_LOG")" 'antigravity/cli/1.4.12' || return 1
     [[ "$(<"$MOCK_CURL_LOG")" != *'fallback-key'* ]] || fail 'management key leaked into provider curl arguments'
 }
 
@@ -784,6 +828,8 @@ run_test 'transforms Codex dual windows' test_transforms_codex_dual_windows
 run_test 'fetches and transforms Codex reset credits' test_codex_fetches_and_transforms_reset_credits
 run_test 'skips Codex reset credits when count is zero' test_codex_skips_reset_credits_when_available_count_is_zero
 run_test 'transforms Antigravity groups' test_transforms_antigravity_groups
+run_test 'transforms separate Gemini and Argon quota windows' test_transforms_antigravity_gemini_and_argon_windows
+run_test 'keeps exhausted Argon quota separate from Gemini' test_keeps_exhausted_argon_quota_separate_from_gemini
 run_test 'reads Antigravity project ID from metadata' test_reads_antigravity_project_id_from_metadata
 run_test 'downloads Antigravity auth file for project ID' test_downloads_antigravity_auth_file_for_project_id
 run_test 'rejects upstream error status' test_rejects_upstream_error_status

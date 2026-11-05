@@ -17,6 +17,7 @@ Only Antigravity and Codex quota providers are supported. Other provider records
 ## Supported quota displays
 
 - Antigravity account groups and buckets, including remaining percentages and reset times.
+- Separate Gemini and Claude/GPT windows, plus the Gemini 4 Argon weekly quota when provided by Antigravity.
 - Codex primary- and secondary-window remaining percentages and reset times.
 - Codex rate limit reset credits and expiration times when available.
 - Per-account details in the popup and the average remaining quota in the bar.
